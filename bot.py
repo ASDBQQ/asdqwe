@@ -1,7 +1,7 @@
 import asyncio
 import random
 import re
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
@@ -87,7 +87,7 @@ processed_ton_tx: set[str] = set()
 # кэш курса TON→RUB
 _ton_rate_cache: dict[str, float | datetime] = {
     "value": 0.0,
-    "updated": datetime.fromtimestamp(0, tz=UTC),
+    "updated": datetime.fromtimestamp(0, tz=timezone.utc),
 }
 
 
@@ -134,7 +134,7 @@ def format_coins(n: int) -> str:
 
 async def get_ton_rub_rate() -> float:
     """Получить курс TON→RUB через tonapi.io (с простым кэшем)."""
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     cached_value = _ton_rate_cache["value"]
     updated: datetime = _ton_rate_cache["updated"]  # type: ignore
 
@@ -258,7 +258,7 @@ def calculate_profit(uid: int, g: dict) -> int:
 
 
 async def build_user_stats_and_history(uid: int):
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     finished = await get_user_games(uid)
 
     stats = {
@@ -410,7 +410,7 @@ async def play_game(gid: int):
     g["creator_roll"] = cr
     g["opponent_roll"] = orr
     g["finished"] = True
-    g["finished_at"] = datetime.now(UTC)
+    g["finished_at"] = datetime.now(timezone.utc)
 
     bank = bet * 2
 
@@ -473,7 +473,7 @@ async def play_game(gid: int):
 
 async def cleanup_worker():
     while True:
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         to_delete = []
 
         for gid, g in list(games.items()):
@@ -606,7 +606,7 @@ async def perform_raffle_draw():
 
     # обновляем структуру розыгрыша и сохраняем в БД
     raffle_round["winner_id"] = winner_id
-    raffle_round["finished_at"] = datetime.now(UTC)
+    raffle_round["finished_at"] = datetime.now(timezone.utc)
     raffle_round["total_bank"] = total_bank
     await upsert_raffle_round(raffle_round)
 
@@ -653,7 +653,7 @@ async def place_raffle_bet(uid: int, amount: int):
     global raffle_round, next_raffle_id
 
     if amount < RAFFLE_MIN_BET:
-        raise ValueError(f"Минимальная ставка {RAFFLE_MIN_BET} монет")
+        raise ValueError(f"Минимальная ставка {RAFFLE_MIN_BЕТ} монет")
 
     if get_balance(uid) < amount:
         raise RuntimeError("Недостаточно монет на балансе")
@@ -664,7 +664,7 @@ async def place_raffle_bet(uid: int, amount: int):
         raffle_round = {
             "id": next_raffle_id,
             "bets": {},
-            "created_at": datetime.now(UTC),
+            "created_at": datetime.now(timezone.utc),
             "finished_at": None,
             "winner_id": None,
             "total_bank": 0,
@@ -1135,7 +1135,7 @@ async def process_text(m: types.Message):
             "opponent_roll": None,
             "winner": None,
             "finished": False,
-            "created_at": datetime.now(UTC),
+            "created_at": datetime.now(timezone.utc),
             "finished_at": None,
         }
 
