@@ -1,6 +1,8 @@
 import aiosqlite
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import Dict, Set, List, Any
+
+UTC = timezone.utc
 
 DB_PATH = "database.db"
 
@@ -10,7 +12,6 @@ async def init_db(
     user_usernames: Dict[int, str],
     processed_ton_tx: Set[str],
 ):
-    """Инициализация SQLite, создание таблиц и загрузка данных в память."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(
             """
@@ -72,7 +73,6 @@ async def init_db(
         )
         await db.commit()
 
-        # Загружаем пользователей в память
         async with db.execute("SELECT id, username, balance FROM users") as cur:
             rows = await cur.fetchall()
             for uid, uname, bal in rows:
@@ -80,7 +80,6 @@ async def init_db(
                 if uname:
                     user_usernames[int(uid)] = uname
 
-        # Загружаем уже обработанные TON-транзакции
         async with db.execute("SELECT tx_hash FROM ton_deposits") as cur:
             rows = await cur.fetchall()
             for (tx_hash,) in rows:
@@ -88,7 +87,6 @@ async def init_db(
 
 
 async def upsert_user(user_id: int, username: str | None, balance: int):
-    """Создать/обновить пользователя и баланс."""
     reg_date = datetime.now(UTC).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -105,7 +103,6 @@ async def upsert_user(user_id: int, username: str | None, balance: int):
 
 
 async def upsert_game(game: Dict[str, Any]):
-    """Создать/обновить игру в БД по её id."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -143,7 +140,6 @@ async def upsert_game(game: Dict[str, Any]):
 
 
 async def get_user_games(uid: int) -> List[Dict[str, Any]]:
-    """Получить все завершённые игры пользователя (для статистики/истории)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -161,22 +157,15 @@ async def get_user_games(uid: int) -> List[Dict[str, Any]]:
 
 
 async def get_all_finished_games() -> List[Dict[str, Any]]:
-    """Все завершённые игры (для рейтинга)."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """
-            SELECT *
-            FROM games
-            WHERE finished = 1
-            """
+            """SELECT * FROM games WHERE finished = 1"""
         ) as cur:
-            rows = await cur.fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row) for row in await cur.fetchall()]
 
 
 async def upsert_raffle_round(raffle_round: Dict[str, Any]):
-    """Создать/обновить запись розыгрыша (банкир)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -191,61 +180,11 @@ async def upsert_raffle_round(raffle_round: Dict[str, Any]):
             (
                 raffle_round.get("id"),
                 raffle_round.get("created_at").isoformat()
-                if raffle_round.get("created_at")
-                else None,
+                if raffle_round.get("created_at") else None,
                 raffle_round.get("finished_at").isoformat()
-                if raffle_round.get("finished_at")
-                else None,
+                if raffle_round.get("finished_at") else None,
                 raffle_round.get("winner_id"),
                 raffle_round.get("total_bank"),
             ),
-        )
-        await db.commit()
-
-
-async def add_raffle_bet(round_id: int, user_id: int, amount: int):
-    """Добавить ставку в розыгрыше."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO raffle_bets (round_id, user_id, amount)
-            VALUES (?, ?, ?)
-            """,
-            (round_id, user_id, amount),
-        )
-        await db.commit()
-
-
-async def add_ton_deposit(
-    tx_hash: str,
-    user_id: int,
-    ton_amount: float,
-    coins_amount: int,
-    comment: str,
-):
-    """Сохранить пополнение TON в БД."""
-    ts = datetime.now(UTC).isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT OR IGNORE INTO ton_deposits
-            (tx_hash, user_id, ton_amount, coins_amount, comment, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (tx_hash, user_id, ton_amount, coins_amount, comment, ts),
-        )
-        await db.commit()
-
-
-async def add_transfer(from_user: int, to_user: int, amount: int):
-    """Сохранить перевод монет между пользователями."""
-    ts = datetime.now(UTC).isoformat()
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO transfers (from_user, to_user, amount, timestamp)
-            VALUES (?, ?, ?, ?)
-            """,
-            (from_user, to_user, amount, ts),
         )
         await db.commit()
