@@ -1,3 +1,4 @@
 aiogram==3.1.0
-aiohttp
-pytz
+aiohttp==3.9.1
+aiosqlite==0.19.0
+pytz==2024.1
