@@ -35,7 +35,7 @@ from db import (
 #      НАСТРОЙКИ
 # ========================
 
-BOT_TOKEN = "8589113961:AAH8bF8umtdtYhkhmBB5oW8NoMBMxI4bLxk"
+BOT_TOKEN = "8589113961:AAH8bF8umtdtYhkhbBB5oW8NoMBMxI4bLxk"
 
 # TON кошелёк для пополнений
 TON_WALLET_ADDRESS = "UQCzzlkNLsCGqHTUj1zkD_3CVBMoXw-9Od3dRKGgHaBxysYe"
@@ -209,22 +209,35 @@ def resolve_user_by_username(username_str: str) -> int | None:
 
 def calculate_profit(uid: int, g: dict) -> int:
     """Рассчитывает профит игрока в игре 'dice' (для статистики)."""
-    bet = g.get("bet", 0)
-    winner = g.get("winner", 'cancelled')
+    bet = g.get("bet_amount", 0)
+    winner_id = g.get("winner_id")
 
     # Dice game logic
     if g.get('game_type') == 'dice':
-        if winner == "draw":
-            return 0
-        creator = uid == g.get("creator_id")
-        # При победе игрок получает 2*bet - commission. Ставка уже была списана.
-        # Чистый выигрыш = (2 * bet - commission) - bet = bet - commission
-        commission = int(2 * bet * COMMISSION_RATE)
-        profit = bet - commission
+        # creator_id, opponent_id must be in the game data
+        creator_id = g.get("creator_id")
+        opponent_id = g.get("opponent_id")
+
+        if winner_id is None and g.get('finished') == 1:
+            # Отмененная игра (winner_id=0 for cancelled in db)
+            return 0 
         
-        if (winner == "creator" and creator) or (winner == "opponent" and not creator):
-            return profit
-        return -bet # Проигрыш = потеря ставки
+        commission = int(2 * bet * COMMISSION_RATE)
+        
+        if winner_id == creator_id or winner_id == opponent_id:
+            # Чистый выигрыш = bet - commission
+            profit = bet - commission 
+            if uid == winner_id:
+                return profit
+            else:
+                return -bet # Проигрыш = потеря ставки
+        
+        # Ничья (Rolls are equal, usually winner_id is None/0, and funds returned)
+        if winner_id == 0: # If finished=1 and winner_id=0, it means cancelled or draw with refund
+            # Since dice game logic refunds on a draw, profit is 0 (no loss/gain)
+            return 0 
+        
+        return 0 # Should not happen if logic is sound
 
     return 0
 
@@ -367,7 +380,7 @@ async def play_dice_game(gid: int):
     prize = bank - commission
     
     winner = "draw"
-    winner_id = None
+    winner_id = 0 # 0 for draw/cancelled
     
     if cr > orr:
         winner = "creator"
@@ -381,6 +394,7 @@ async def play_dice_game(gid: int):
         change_balance(MAIN_ADMIN_ID, commission)
     else:
         winner = "draw"
+        # Возвращаем ставки при ничьей
         change_balance(c, bet)
         change_balance(o, bet)
         commission = 0 # Комиссия возвращается при ничьей
@@ -393,8 +407,10 @@ async def play_dice_game(gid: int):
     g["finished_at"] = datetime.now(timezone.utc)
     
     # rolls = [creator_roll, opponent_roll]
-    await upsert_game(g["id"], c, 'dice', bet, cr, 1, winner_id, [cr, orr])
-    del games[gid] # Удаляем из активных
+    await upsert_game(g["id"], c, 'dice', bet, 0, 1, winner_id, [cr, orr], opponent_id=o)
+    
+    if gid in games:
+        del games[gid] # Удаляем из активных
 
     # Уведомления
     for user in (c, o):
@@ -418,7 +434,7 @@ async def play_dice_game(gid: int):
             bank_text = (
                 f"🏆 Победитель: @{winner_username}\n"
                 f"💰 Банк: {format_rubles(bank)} ₽\n"
-                f"💸 Комиссия: {format_rubles(commission)} ₽ (1%)"
+                f"💸 Комиссия: {format_rubles(commission)} ₽ ({COMMISSION_RATE*100}%)"
             )
 
         txt = (
@@ -430,7 +446,10 @@ async def play_dice_game(gid: int):
             f"{result_text}\n"
             f"💼 **Баланс:** {format_rubles(get_balance(user))} ₽"
         )
-        await bot.send_message(user, txt)
+        try:
+            await bot.send_message(user, txt)
+        except Exception:
+            pass # Если пользователь заблокировал бота
 
 @dp.callback_query(F.data == "create_dice_game")
 async def cb_create_game(callback: CallbackQuery, state: FSMContext):
@@ -602,7 +621,9 @@ async def cb_cancel_game(callback: CallbackQuery):
     
     # Завершаем игру в БД (finished=1, winner_id=0, rolls=[])
     await upsert_game(g["id"], g["creator_id"], 'dice', bet, 0, 1)
-    del games[gid]
+    
+    if gid in games:
+        del games[gid]
     
     await callback.message.answer(
         f"❌ Ставка №{gid} отменена. {format_rubles(bet)} ₽ возвращены на баланс."
@@ -672,7 +693,6 @@ async def handle_banker_bet(message: types.Message, state: FSMContext):
     }
     
     # 3. Отправляем сообщение о создании
-    # ИСПРАВЛЕНИЕ ОШИБКИ: Замена двойных кавычек на одинарные во внутренней f-строке
     text = f"🎩 **Игра 'Банкир' №{game_id} создана!**\n\n" \
            f"**Банкир:** @{message.from_user.username or f'ID{uid}'}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
@@ -737,11 +757,12 @@ async def cb_banker_join(callback: CallbackQuery):
     creator_user = user_usernames.get(game['creator_id'], f"ID{game['creator_id']}")
     joiners_count = len(joiners_list)
     
+    # ИСПРАВЛЕНИЕ: Замена f'@{j['username']}' на f"@{j['username']}"
     text = f"🎩 **Игра 'Банкир' №{game_id}**\n\n" \
            f"**Банкир:** @{creator_user}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
            f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n" \
-           f"**Присоединились:** {', '.join([f'@{j['username']}' for j in joiners_list])}\n" \
+           f"**Присоединились:** {', '.join([f"@{j['username']}" for j in joiners_list])}\n" \
            "Ожидаем присоединившихся игроков или начала броска."
     
     await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
@@ -873,7 +894,9 @@ async def finish_banker_game(game_id: int):
             win_amount = bet_amount - int(bet_amount * commission_rate)
             change_balance(joiner['user_id'], bet_amount + win_amount) # Возврат ставки + чистый выигрыш
             
-            banker_profit_before_commission -= bet_amount 
+            banker_profit_before_commission -= win_amount 
+            total_banker_commission += int(bet_amount * commission_rate)
+            
             results_text += f"🔹 @{joiner['username']} бросил **{joiner_roll}** и **ВЫИГРАЛ** (+{win_amount} ₽)\n"
         else:
             # Присоединившийся проиграл (ставка уже списана)
@@ -884,20 +907,25 @@ async def finish_banker_game(game_id: int):
 
     # 2. Выплата Банкиру
     
-    final_banker_payout = banker_profit_before_commission
+    final_banker_profit = banker_profit_before_commission
+    
+    # Комиссия Банкира снимается только с его чистого дохода (Banker wins - Banker losses)
     if banker_profit_before_commission > 0:
-        banker_commission = int(banker_profit_before_commission * commission_rate)
-        final_banker_payout = banker_profit_before_commission - banker_commission
-        total_banker_commission = banker_commission
+        banker_commission_on_win = int(banker_profit_before_commission * commission_rate)
+        final_banker_profit = banker_profit_before_commission - banker_commission_on_win
+        total_banker_commission += banker_commission_on_win
+    
+    # Зачисление комиссии админу (общая со всех выигрышей)
+    change_balance(MAIN_ADMIN_ID, total_banker_commission)
     
     # Возврат Банкиру его ставки + чистый доход/убыток
-    change_balance(creator_id, bet_amount + final_banker_payout) 
+    change_balance(creator_id, bet_amount + final_banker_profit) 
     
     results_text += f"\n**Итог Банкира:**\n" \
                     f"Начальная ставка: {format_rubles(bet_amount)} ₽\n" \
                     f"Прибыль/убыток (до комиссии): {format_rubles(banker_profit_before_commission)} ₽\n" \
                     f"Комиссия ({commission_rate*100}%): -{format_rubles(total_banker_commission)} ₽\n" \
-                    f"Чистая выплата (Возврат ставки + Прибыль): **{format_rubles(bet_amount + final_banker_payout)} ₽**"
+                    f"Чистая выплата (Возврат ставки + Прибыль): **{format_rubles(bet_amount + final_banker_profit)} ₽**"
 
     # 3. Завершение игры в БД и удаление из кэша
     await upsert_game(
@@ -905,7 +933,8 @@ async def finish_banker_game(game_id: int):
         target_score=banker_roll, finished=1, winner_id=creator_id,
         rolls=game['rolls'], joiners=joiners_list
     )
-    del games[game_id]
+    if game_id in games:
+        del games[game_id]
     
     # Уведомление в чат (отправляем Банкиру, чтобы он переслал или сообщил в чат)
     try:
@@ -1166,16 +1195,21 @@ async def cb_rating_dice(callback: CallbackQuery):
     user_stats = {} 
     
     for g in finished_games:
-        finished_at = datetime.fromisoformat(g["finished_at"]) 
+        # finished_at теперь должен быть datetime благодаря db.py
+        finished_at = g["finished_at"] 
         if (now - finished_at) > timedelta(days=30):
             continue
             
-        for uid in (g["creator_id"], g["opponent_id"]):
+        for uid in (g.get("creator_id"), g.get("opponent_id")):
             if uid is None:
                 continue
             
             stats = user_stats.setdefault(uid, {"profit": 0, "games": 0})
-            stats["profit"] += calculate_profit(uid, g)
+            
+            # Используем данные игры и функцию calculate_profit
+            profit = calculate_profit(uid, g) 
+            
+            stats["profit"] += profit
             stats["games"] += 1
 
     top_list = sorted(user_stats.items(), key=lambda x: (x[1]['profit'], -x[1]['games']), reverse=True)
@@ -1244,7 +1278,7 @@ async def msg_profile(m: types.Message):
     reg_date_str = reg_date_dt.strftime("%d.%m.%Y %H:%M:%S") if reg_date_dt else "Неизвестно"
     
     dice_games_count = await get_user_dice_games_count(uid)
-    banker_games_count = await get_user_raffle_bets_count(uid)
+    banker_games_count = await get_user_raffle_bets_count(uid) # Using raffle count as a temporary placeholder for banker games count
 
     text = (
         f"👤 Ваш Профиль:\n\n"
@@ -1472,11 +1506,13 @@ async def cb_my_games(callback: CallbackQuery):
     history = []
     for g in finished[:30]:
         if uid == g["creator_id"]:
-            my = g["creator_roll"]
-            opp = g["opponent_roll"]
+            rolls = g.get("rolls")
+            my = rolls[0] if rolls and len(rolls) > 0 else "?"
+            opp = rolls[1] if rolls and len(rolls) > 1 else "?"
         else:
-            my = g["opponent_roll"]
-            opp = g["creator_roll"]
+            rolls = g.get("rolls")
+            my = rolls[1] if rolls and len(rolls) > 1 else "?"
+            opp = rolls[0] if rolls and len(rolls) > 0 else "?"
 
         profit = calculate_profit(uid, g)
         if profit > 0:
