@@ -21,16 +21,12 @@ from db import (
     upsert_user,
     upsert_game,
     get_user_games,
-    get_all_finished_games,
-    upsert_raffle_round,
-    add_raffle_bet,
     add_ton_deposit,
     add_transfer,
     get_user_registered_at,
     get_user_dice_games_count,
     get_user_raffle_bets_count,
     get_users_profit_and_games_30_days,
-    get_user_bets_in_raffle,
     get_game,
     get_banker_rating_30_days,
 )
@@ -676,8 +672,9 @@ async def handle_banker_bet(message: types.Message, state: FSMContext):
     }
     
     # 3. Отправляем сообщение о создании
+    # ИСПРАВЛЕНИЕ ОШИБКИ: Замена двойных кавычек на одинарные во внутренней f-строке
     text = f"🎩 **Игра 'Банкир' №{game_id} создана!**\n\n" \
-           f"**Банкир:** @{message.from_user.username or f"ID{uid}"}\n" \
+           f"**Банкир:** @{message.from_user.username or f'ID{uid}'}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
            f"**Слоты:** 0/{BANKER_MAX_JOINERS}\n" \
            "Нажмите **'Начать бросок'** или ожидайте присоединившихся."
@@ -1252,7 +1249,7 @@ async def msg_profile(m: types.Message):
     text = (
         f"👤 Ваш Профиль:\n\n"
         f"🆔 ID Пользователя: <code>{uid}</code>\n"
-        f"🗓 Дата регистрации: {reg_date_str}\n\n"
+        f"🗓 Дата регистрации: {reg_date_str}\n"
         f"🎲 Всего игр в Кости: {dice_games_count}\n"
         f"🎩 Всего игр в Банкир: {banker_games_count}"
     )
@@ -1446,7 +1443,8 @@ async def cb_my_games(callback: CallbackQuery):
     
     for g in finished:
         if not g.get("finished_at"): continue
-        finished_at = datetime.fromisoformat(g["finished_at"])
+        # finished_at теперь должен быть datetime благодаря db.py
+        finished_at = g["finished_at"] 
         delta = now - finished_at
         p = calculate_profit(uid, g) # Используем обновленную функцию
 
@@ -1603,13 +1601,16 @@ async def main():
     
     # инициализация БД и загрузка данных
     try:
+        # pool импортируется в db.py, поэтому он должен быть доступен
+        from db import pool 
         await init_db(user_balances, user_usernames, processed_ton_tx)
         
         # Обновляем next_game_id для активных игр в кэше
         global next_game_id
-        async with pool.acquire() as conn:
-            max_id = await conn.fetchval("SELECT MAX(id) FROM games")
-            next_game_id = (max_id or 0) + 1
+        if pool:
+            async with pool.acquire() as conn:
+                max_id = await conn.fetchval("SELECT MAX(id) FROM games")
+                next_game_id = (max_id or 0) + 1
             
     except Exception as e:
         print(f"Критическая ошибка при инициализации БД: {e}")
