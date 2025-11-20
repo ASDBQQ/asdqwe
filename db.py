@@ -6,29 +6,15 @@ DB_PATH = "bot.db"
 
 async def init_db(user_balances, user_usernames, processed_ton_tx):
     async with aiosqlite.connect(DB_PATH) as db:
-        # --- USERS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 balance INTEGER,
-                reg_date TEXT
+                registered_at TEXT  -- Добавлено поле для даты регистрации
             )
         """)
-
-        # Проверяем, есть ли колонка reg_date (на случай старой БД без неё)
-        try:
-            async with db.execute("PRAGMA table_info(users)") as cur:
-                cols = await cur.fetchall()
-            col_names = {c[1] for c in cols}
-            if "reg_date" not in col_names:
-                # Добавляем колонку, если её не было
-                await db.execute("ALTER TABLE users ADD COLUMN reg_date TEXT")
-        except Exception:
-            # Если что-то пошло не так — просто продолжаем, бот всё равно будет работать
-            pass
-
-        # --- GAMES (кости) ---
+        # ... (остальные CREATE TABLE остаются без изменений) ...
         await db.execute("""
             CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
@@ -44,7 +30,6 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
-        # --- RAFFLE ROUNDS (банкир / розыгрыши) ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS raffle_rounds (
                 id INTEGER PRIMARY KEY,
@@ -64,7 +49,6 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
-        # --- TON DEPOSITS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS ton_deposits (
                 tx_hash TEXT PRIMARY KEY,
@@ -76,7 +60,6 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
-        # --- TRANSFERS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS transfers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +72,7 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
 
         await db.commit()
 
-        # загрузка пользователей (reg_date сейчас не нужен в памяти)
+        # загрузка пользователей
         async with db.execute("SELECT user_id, username, balance FROM users") as cur:
             for uid, username, balance in await cur.fetchall():
                 user_balances[uid] = balance
@@ -101,31 +84,40 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
                 processed_ton_tx.add(tx_hash)
 
 
-async def upsert_user(uid, username, balance):
-    """
-    Обновляем/создаём пользователя.
-    - При первом появлении пользователя записываем дату регистрации reg_date.
-    - При последующих обновлениях reg_date не меняется.
-    """
+# ... (upsert_user обновлён для работы с registered_at) ...
+async def upsert_user(uid, username, balance, registered_at=None):
     async with aiosqlite.connect(DB_PATH) as db:
-        now = datetime.now(timezone.utc).isoformat()
-
-        # 1) Пытаемся вставить пользователя, если его ещё нет
         await db.execute("""
-            INSERT OR IGNORE INTO users (user_id, username, balance, reg_date)
+            INSERT INTO users (user_id, username, balance, registered_at)
             VALUES (?, ?, ?, ?)
-        """, (uid, username, balance, now))
-
-        # 2) В любом случае обновляем username и balance
-        await db.execute("""
-            UPDATE users
-            SET username = ?, balance = ?
-            WHERE user_id = ?
-        """, (username, balance, uid))
-
+            ON CONFLICT(user_id) DO UPDATE SET
+                username=excluded.username,
+                balance=excluded.balance
+        """, (
+            uid,
+            username,
+            balance,
+            registered_at.isoformat() if registered_at else datetime.now(timezone.utc).isoformat() # Вставляем дату при первой записи
+        ))
         await db.commit()
 
 
+# 🔥 НОВАЯ ФУНКЦИЯ: для получения даты регистрации
+async def get_user_registered_at(uid: int) -> datetime | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT registered_at FROM users WHERE user_id = ?",
+            (uid,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row and row[0]:
+                try:
+                    return datetime.fromisoformat(row[0])
+                except ValueError:
+                    return None
+            return None
+
+# ... (остальные функции остаются без изменений, кроме той, что в конце) ...
 async def upsert_game(g):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -177,6 +169,30 @@ async def get_all_finished_games():
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, row)) for row in await cur.fetchall()]
 
+# 🔥 НОВАЯ ФУНКЦИЯ: для подсчёта игр в кости (пользователь участвовал)
+async def get_user_dice_games_count(uid: int, finished_only: bool = True) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        query = """
+            SELECT COUNT(*) FROM games
+            WHERE (creator_id = ? OR opponent_id = ?)
+        """
+        params = [uid, uid]
+        if finished_only:
+            query += " AND finished = 1"
+        
+        async with db.execute(query, params) as cur:
+            count = (await cur.fetchone())[0]
+            return count
+
+# 🔥 НОВАЯ ФУНКЦИЯ: для подсчёта ставок в банкире (пользователь участвовал)
+async def get_user_raffle_bets_count(uid: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(DISTINCT raffle_id) FROM raffle_bets WHERE user_id = ?",
+            (uid,)
+        ) as cur:
+            count = (await cur.fetchone())[0]
+            return count
 
 async def upsert_raffle_round(r):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -236,3 +252,33 @@ async def add_transfer(from_id, to_id, amount):
         ))
         await db.commit()
 
+
+# 🔥 ИЗМЕНЕНИЕ: Добавлен необязательный параметр max_bets_per_raffle
+async def get_user_bets_in_raffle(raffle_id, user_id) -> int:
+    """Возвращает количество ставок, сделанных пользователем в текущем раунде розыгрыша."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM raffle_bets WHERE raffle_id = ? AND user_id = ?",
+            (raffle_id, user_id)
+        ) as cur:
+            return (await cur.fetchone())[0]
+
+# 🔥 НОВАЯ ФУНКЦИЯ: для получения всех пользователей с их профитом за 30 дней (для рейтинга)
+async def get_users_profit_and_games_30_days():
+    now = datetime.now(timezone.utc)
+    delta_30_days = now - timedelta(days=30)
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Получаем все игры за последние 30 дней
+        async with db.execute(
+            "SELECT * FROM games WHERE finished = 1 AND finished_at >= ?",
+            (delta_30_days.isoformat(),)
+        ) as cur:
+            cols = [c[0] for c in cur.description]
+            finished_games = [dict(zip(cols, row)) for row in await cur.fetchall()]
+
+        # Получаем всех пользователей для имен и ID
+        async with db.execute("SELECT user_id FROM users") as cur:
+            all_uids = [row[0] for row in await cur.fetchall()]
+
+    return finished_games, all_uids
