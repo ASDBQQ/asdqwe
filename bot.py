@@ -788,6 +788,12 @@ async def cb_banker_roll_start(callback: CallbackQuery):
     # 1. Банкир бросает
     creator_roll = random.randint(1, 6)
     
+    @dp.callback_query(F.data.startswith("banker_roll_start_"))
+async def cb_banker_roll_start(callback: CallbackQuery):
+    # ... (code for roll, game update)
+
+    creator_roll = random.randint(1, 6)
+    
     # 2. Записываем бросок Банкира (target_score)
     await upsert_game(
         game_id=game_id, creator_id=user_id, game_type='banker', bet_amount=game['bet_amount'],
@@ -795,10 +801,15 @@ async def cb_banker_roll_start(callback: CallbackQuery):
     )
     games[game_id]['target_score'] = creator_roll # Обновляем кэш
 
+    # ИСПРАВЛЕНИЕ: Замена f"ID{user_id}" на f'ID{user_id}' для корректного вложения
     text = f"🎲 **Бросок Банкира в игре №{game_id}!**\n\n" \
-           f"**Банкир** (@{user_usernames.get(user_id, f"ID{user_id}")}) бросил **{creator_roll}**\n\n" \
+           f"**Банкир** (@{user_usernames.get(user_id, f'ID{user_id}')}) бросил **{creator_roll}**\n\n" \
            "Теперь очередь присоединившихся бросать кости. Проверьте личные сообщения."
     
+    # Отправляем сообщение в чат
+    await callback.message.edit_text(text, reply_markup=None)
+
+    # ... (code for sending private messages)
     # Отправляем сообщение в чат
     await callback.message.edit_text(text, reply_markup=None)
 
