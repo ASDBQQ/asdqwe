@@ -801,13 +801,15 @@ async def cb_banker_join(callback: CallbackQuery):
     creator_user = user_usernames.get(game['creator_id'], f"ID{game['creator_id']}")
     joiners_count = len(joiners_list)
     
-    # ИСПРАВЛЕНИЕ СИНТАКСИЧЕСКОЙ ОШИБКИ ЗДЕСЬ
+    # ИСПРАВЛЕНИЕ: Используем одинарные кавычки для 'username'
     text = f"🎩 **Игра 'Банкир' №{game_id}**\n\n" \
            f"**Банкир:** @{creator_user}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
            f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n" \
            f"**Присоединились:** {', '.join([f'@{j['username']}' for j in joiners_list])}\n" \
            "Ожидаем присоединившихся игроков или начала броска."
+    
+    await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
     
     await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
 
@@ -1742,3 +1744,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен.")
+
