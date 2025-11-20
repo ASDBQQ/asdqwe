@@ -35,7 +35,7 @@ from db import (
 #      НАСТРОЙКИ
 # ========================
 
-BOT_TOKEN = "8590628091:AAENNahptSSIIno7g3ZaUnWAwd1rwg0Ifl0"
+BOT_TOKEN = "8589113961:AAH8bF8umtdtYhkhmBB5oW8NoMBMxI4bLxk"
 
 # TON кошелёк для пополнений
 TON_WALLET_ADDRESS = "UQCzzlkNLsCGqHTUj1zkD_3CVBMoXw-9Od3dRKGgHaBxysYe"
