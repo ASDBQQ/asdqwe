@@ -6,14 +6,29 @@ DB_PATH = "bot.db"
 
 async def init_db(user_balances, user_usernames, processed_ton_tx):
     async with aiosqlite.connect(DB_PATH) as db:
+        # --- USERS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
-                balance INTEGER
+                balance INTEGER,
+                reg_date TEXT
             )
         """)
 
+        # Проверяем, есть ли колонка reg_date (на случай старой БД без неё)
+        try:
+            async with db.execute("PRAGMA table_info(users)") as cur:
+                cols = await cur.fetchall()
+            col_names = {c[1] for c in cols}
+            if "reg_date" not in col_names:
+                # Добавляем колонку, если её не было
+                await db.execute("ALTER TABLE users ADD COLUMN reg_date TEXT")
+        except Exception:
+            # Если что-то пошло не так — просто продолжаем, бот всё равно будет работать
+            pass
+
+        # --- GAMES (кости) ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
@@ -29,6 +44,7 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
+        # --- RAFFLE ROUNDS (банкир / розыгрыши) ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS raffle_rounds (
                 id INTEGER PRIMARY KEY,
@@ -48,6 +64,7 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
+        # --- TON DEPOSITS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS ton_deposits (
                 tx_hash TEXT PRIMARY KEY,
@@ -59,6 +76,7 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
             )
         """)
 
+        # --- TRANSFERS ---
         await db.execute("""
             CREATE TABLE IF NOT EXISTS transfers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +89,7 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
 
         await db.commit()
 
-        # загрузка пользователей
+        # загрузка пользователей (reg_date сейчас не нужен в памяти)
         async with db.execute("SELECT user_id, username, balance FROM users") as cur:
             for uid, username, balance in await cur.fetchall():
                 user_balances[uid] = balance
@@ -84,14 +102,27 @@ async def init_db(user_balances, user_usernames, processed_ton_tx):
 
 
 async def upsert_user(uid, username, balance):
+    """
+    Обновляем/создаём пользователя.
+    - При первом появлении пользователя записываем дату регистрации reg_date.
+    - При последующих обновлениях reg_date не меняется.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 1) Пытаемся вставить пользователя, если его ещё нет
         await db.execute("""
-            INSERT INTO users (user_id, username, balance)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                username=excluded.username,
-                balance=excluded.balance
-        """, (uid, username, balance))
+            INSERT OR IGNORE INTO users (user_id, username, balance, reg_date)
+            VALUES (?, ?, ?, ?)
+        """, (uid, username, balance, now))
+
+        # 2) В любом случае обновляем username и balance
+        await db.execute("""
+            UPDATE users
+            SET username = ?, balance = ?
+            WHERE user_id = ?
+        """, (username, balance, uid))
+
         await db.commit()
 
 
@@ -167,7 +198,6 @@ async def upsert_raffle_round(r):
         await db.commit()
 
 
-# 🔥 ВОТ ЭТА ФУНКЦИЯ — ГЛАВНАЯ, ЕЁ НЕ БЫЛО!
 async def add_raffle_bet(raffle_id, user_id, amount):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -205,5 +235,4 @@ async def add_transfer(from_id, to_id, amount):
             datetime.now(timezone.utc).isoformat()
         ))
         await db.commit()
-
 
