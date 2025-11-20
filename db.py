@@ -205,3 +205,5 @@ async def add_transfer(from_id, to_id, amount):
             datetime.now(timezone.utc).isoformat()
         ))
         await db.commit()
+
+
