@@ -16,7 +16,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # Импортируем обновленные функции из db.py
-# ПРЕДПОЛАГАЕТСЯ, что эти функции в db.py существуют и корректны
 from db import (
     init_db,
     upsert_user,
@@ -26,7 +25,7 @@ from db import (
     add_transfer,
     get_user_registered_at,
     get_user_dice_games_count,
-    get_user_raffle_bets_count, # Временно используется для Банкира (должна быть get_user_banker_games_count)
+    get_user_raffle_bets_count,
     get_users_profit_and_games_30_days,
     get_game,
     get_banker_rating_30_days,
@@ -51,9 +50,6 @@ COMMISSION_RATE = 0.01 # 1% комиссии
 
 MAIN_ADMIN_ID = 7106398341
 ADMIN_IDS = {MAIN_ADMIN_ID, 783924834}
-
-# --- НОВАЯ КОНСТАНТА ---
-DICE_BET_MIN_CANCEL_AGE = timedelta(minutes=1) 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -86,9 +82,8 @@ class Withdraw(StatesGroup):
 
 user_balances: dict[int, int] = {}
 user_usernames: dict[int, str] = {}
-# Кэш games используется ТОЛЬКО для активных игр "Кости" (opponent_id=None)
-games: dict[int, dict] = {} 
-next_game_id = 1 
+games: dict[int, dict] = {} # Используется только для активных игр, остальное - БД
+next_game_id = 1 # Используется только для инициализации
 processed_ton_tx: set[str] = set()
 
 # кэш курса TON→RUB
@@ -105,34 +100,47 @@ def is_admin(uid: int) -> bool:
     return uid in ADMIN_IDS
 
 def get_balance(uid: int) -> int:
-    """Возвращает баланс в рублях/монетах, загруженный из БД (СИНХРОННАЯ)."""
+    """Возвращает баланс в рублях/монетах, загруженный из БД."""
     if uid not in user_balances:
         user_balances[uid] = START_BALANCE_COINS
     return user_balances[uid]
 
-async def _schedule_upsert_user(uid: int, balance_delta: int = 0, registered_at: datetime | None = None):
-    """Асинхронное сохранение пользователя в БД."""
+def _schedule_upsert_user(uid: int, registered_at: datetime | None = None):
+    """Фоновое сохранение пользователя в БД (баланс + username + registered_at)."""
     username = user_usernames.get(uid)
-    await upsert_user(uid, username, balance_delta, registered_at)
+    balance_delta = 0 # Используем delta, так как баланс обновляется в памяти
+    try:
+        asyncio.create_task(upsert_user(uid, username, balance_delta, registered_at))
+    except RuntimeError:
+        pass
 
-async def change_balance(uid: int, delta: int):
-    """Обновляет баланс в памяти и запускает АСИНХРОННОЕ сохранение (ИСПРАВЛЕНО: теперь await)."""
+def change_balance(uid: int, delta: int):
+    """Обновляет баланс в памяти и запускает фоновое сохранение."""
     get_balance(uid)
     user_balances[uid] += delta
-    await _schedule_upsert_user(uid, delta)
+    
+    username = user_usernames.get(uid)
+    try:
+        # Сразу сохраняем изменение в БД
+        asyncio.create_task(upsert_user(uid, username, delta))
+    except RuntimeError:
+        pass
 
-async def set_balance(uid: int, value: int):
-    """Устанавливает баланс в памяти и запускает АСИНХРОННОЕ сохранение (ИСПРАВЛЕНО: теперь await)."""
+def set_balance(uid: int, value: int):
+    """Устанавливает баланс в памяти и запускает фоновое сохранение (через разницу)."""
     current_balance = get_balance(uid)
     delta = value - current_balance
     user_balances[uid] = value
-    await _schedule_upsert_user(uid, delta)
+    
+    username = user_usernames.get(uid)
+    try:
+        # Обновление через дельту
+        asyncio.create_task(upsert_user(uid, username, delta))
+    except RuntimeError:
+        pass
 
-def format_rubles(n: int | str) -> str:
-    """Форматирует число с разделителем тысяч (СИНХРОННАЯ)."""
-    # Преобразуем str в int, если необходимо, для корректного форматирования
-    n_int = int(n) if isinstance(n, str) and n.lstrip("+-").isdigit() else n
-    return f"{n_int:,}".replace(",", " ")
+def format_rubles(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
 
 async def get_ton_rub_rate() -> float:
     """Получить курс TON→RUB через tonapi.io (с простым кэшем)."""
@@ -152,7 +160,6 @@ async def get_ton_rub_rate() -> float:
         _ton_rate_cache["updated"] = now
         return rate
     except Exception:
-        # Возвращаем кэшированное значение или дефолтное
         return float(cached_value or 100.0)
 
 async def format_balance_text(uid: int) -> str:
@@ -184,16 +191,14 @@ def bottom_menu():
     )
 
 def register_user(user: types.User):
-    """Регистрация пользователя в памяти и фоновое сохранение в БД (СИНХРОННАЯ)."""
     uid = user.id
-    # Используем create_task для фоновой операции, чтобы не блокировать хендлер
     if uid not in user_balances:
         user_balances[uid] = START_BALANCE_COINS
-        asyncio.create_task(_schedule_upsert_user(uid, registered_at=datetime.now(timezone.utc)))
+        _schedule_upsert_user(uid, datetime.now(timezone.utc))
     
     if user.username:
         user_usernames[uid] = user.username
-        asyncio.create_task(_schedule_upsert_user(uid))
+        _schedule_upsert_user(uid)
 
 def resolve_user_by_username(username_str: str) -> int | None:
     uname = username_str.strip().lstrip("@").lower()
@@ -203,75 +208,37 @@ def resolve_user_by_username(username_str: str) -> int | None:
     return None
 
 def calculate_profit(uid: int, g: dict) -> int:
-    """Рассчитывает профит игрока в игре (для статистики)."""
-    bet = g.get("bet_amount", g.get("bet", 0)) # Использование bet_amount для БД, bet для кэша
+    """Рассчитывает профит игрока в игре 'dice' (для статистики)."""
+    bet = g.get("bet_amount", 0)
     winner_id = g.get("winner_id")
-    game_type = g.get('game_type')
 
     # Dice game logic
-    if game_type == 'dice':
+    if g.get('game_type') == 'dice':
+        # creator_id, opponent_id must be in the game data
         creator_id = g.get("creator_id")
         opponent_id = g.get("opponent_id")
 
-        if winner_id is None and g.get('finished') in (1, True):
+        if winner_id is None and g.get('finished') == 1:
             # Отмененная игра (winner_id=0 for cancelled in db)
             return 0 
         
         commission = int(2 * bet * COMMISSION_RATE)
         
         if winner_id == creator_id or winner_id == opponent_id:
+            # Чистый выигрыш = bet - commission
             profit = bet - commission 
             if uid == winner_id:
                 return profit
             else:
-                return -bet 
+                return -bet # Проигрыш = потеря ставки
         
-        if winner_id == 0: 
-            # Ничья (Rolls are equal) или отмена с возвратом
+        # Ничья (Rolls are equal, usually winner_id is None/0, and funds returned)
+        if winner_id == 0: # If finished=1 and winner_id=0, it means cancelled or draw with refund
+            # Since dice game logic refunds on a draw, profit is 0 (no loss/gain)
             return 0 
         
-        return 0 
-    
-    # Banker game logic (КРИТИЧНАЯ ПРОБЛЕМА: ОТСУТСТВОВАЛА ЛОГИКА)
-    if game_type == 'banker':
-        creator_id = g.get("creator_id")
-        joiners_list = g.get('joiners', []) # joiners должен быть сохранен в БД
-        
-        if uid == creator_id:
-            # Банкир
-            banker_profit = 0
-            # Если не завершена/отменена
-            if g.get('finished') not in (1, True):
-                return 0
-            
-            # Логика профита Банкира
-            for joiner in joiners_list:
-                if joiner.get('won') is True:
-                    # Проигрыш: (ставка - комиссия)
-                    banker_profit -= (bet - int(bet * COMMISSION_RATE)) 
-                elif joiner.get('won') is False:
-                    # Выигрыш: ставка
-                    banker_profit += bet
-            
-            # Комиссия Банкира снимается с его чистого дохода
-            if banker_profit > 0:
-                banker_profit -= int(banker_profit * COMMISSION_RATE)
-            
-            # Профит = чистый доход/убыток (ставка возвращается, поэтому не входит в профит)
-            return banker_profit 
-        
-        # Присоединившийся
-        joiner_info = next((j for j in joiners_list if j['user_id'] == uid), None)
-        if joiner_info:
-            if joiner_info.get('won') is True:
-                # Выигрыш: (ставка - комиссия)
-                return bet - int(bet * COMMISSION_RATE)
-            elif joiner_info.get('won') is False:
-                # Проигрыш: -ставка
-                return -bet
-            # Если не выиграл/проиграл (отмена, например)
-            return 0
-    
+        return 0 # Should not happen if logic is sound
+
     return 0
 
 
@@ -282,7 +249,6 @@ def calculate_profit(uid: int, g: dict) -> int:
 @dp.message(Command("start"))
 async def cmd_start(m: types.Message):
     register_user(m.from_user)
-    # ... (Остальной код start без изменений)
     await m.answer(
         "👋 Добро пожаловать в игровой бот TON!\n"
         "Здесь вы найдёте кости, розыгрыши и честные игры на ₽.\n"
@@ -419,18 +385,18 @@ async def play_dice_game(gid: int):
     if cr > orr:
         winner = "creator"
         winner_id = c
-        await change_balance(c, prize) # ИСПРАВЛЕНО: await change_balance
-        await change_balance(MAIN_ADMIN_ID, commission) # ИСПРАВЛЕНО: await change_balance
+        change_balance(c, prize)
+        change_balance(MAIN_ADMIN_ID, commission)
     elif orr > cr:
         winner = "opponent"
         winner_id = o
-        await change_balance(o, prize) # ИСПРАВЛЕНО: await change_balance
-        await change_balance(MAIN_ADMIN_ID, commission) # ИСПРАВЛЕНО: await change_balance
+        change_balance(o, prize)
+        change_balance(MAIN_ADMIN_ID, commission)
     else:
         winner = "draw"
         # Возвращаем ставки при ничьей
-        await change_balance(c, bet) # ИСПРАВЛЕНО: await change_balance
-        await change_balance(o, bet) # ИСПРАВЛЕНО: await change_balance
+        change_balance(c, bet)
+        change_balance(o, bet)
         commission = 0 # Комиссия возвращается при ничьей
 
     # Обновление кэша и БД
@@ -512,15 +478,9 @@ async def handle_dice_bet(message: types.Message, state: FSMContext):
     gid = next_game_id
     next_game_id += 1
     
-    # Снимаем ставку (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(uid, -bet)
+    # Снимаем ставку
+    change_balance(uid, -bet)
 
-    # Сохраняем игру в БД
-    await upsert_game(
-        game_id=gid, creator_id=uid, game_type='dice', bet_amount=bet,
-        target_score=0, finished=0
-    )
-    
     # Создаем игру в памяти (для быстрой работы)
     game_data = {
         "id": gid,
@@ -536,6 +496,12 @@ async def handle_dice_bet(message: types.Message, state: FSMContext):
         "finished_at": None,
     }
     games[gid] = game_data
+
+    # Сохраняем игру в БД
+    await upsert_game(
+        game_id=gid, creator_id=uid, game_type='dice', bet_amount=bet,
+        target_score=0, finished=0
+    )
 
     await message.answer(f"✅ **Игра 'Кости' №{gid} создана!** Ставка: {format_rubles(bet)} ₽.")
     await send_games_list(message.chat.id, uid)
@@ -556,8 +522,6 @@ async def cb_game_open(callback: CallbackQuery):
     g = games.get(gid)
 
     if not g or g["opponent_id"] is not None:
-        # Обновляем список игр, если игра занята/отменена, чтобы пользователь увидел актуальные данные
-        await send_games_list(callback.message.chat.id, callback.from_user.id, callback.message.message_id)
         return await callback.answer("Игра не найдена или уже занята.", show_alert=True)
 
     kb = InlineKeyboardMarkup(
@@ -568,8 +532,7 @@ async def cb_game_open(callback: CallbackQuery):
     )
 
     creator_username = user_usernames.get(g["creator_id"], f"ID{g['creator_id']}")
-    # ИСПРАВЛЕНО: используем edit_message_text, чтобы не засорять чат
-    await callback.message.edit_text(
+    await callback.message.answer(
         f"🎲 Игра №{gid}\n"
         f"👤 Создатель: @{creator_username}\n"
         f"💰 Ставка: {format_rubles(g['bet'])} ₽\n\n"
@@ -586,7 +549,6 @@ async def cb_join_confirm(callback: CallbackQuery):
 
     g = games.get(gid)
     if not g or g["opponent_id"] is not None or g["creator_id"] == uid:
-        await send_games_list(callback.message.chat.id, callback.from_user.id, callback.message.message_id)
         return await callback.answer("Игра недоступна.", show_alert=True)
 
     bet = g["bet"]
@@ -596,11 +558,11 @@ async def cb_join_confirm(callback: CallbackQuery):
     # Присоединение
     g["opponent_id"] = uid
     user_usernames[uid] = callback.from_user.username or user_usernames.get(uid) or f"ID{uid}"
-    await change_balance(uid, -bet) # ИСПРАВЛЕНО: await change_balance
+    change_balance(uid, -bet)
 
     # Обновляем кэш и БД
     await upsert_game(
-        g["id"], g["creator_id"], 'dice', bet, g.get("creator_roll", 0), 0, opponent_id=uid
+        g["id"], g["creator_id"], 'dice', bet, g["creator_roll"] or 0, 0, opponent_id=uid
     )
 
     await callback.message.answer(f"✅ Вы присоединились к игре №{gid}! Ожидайте бросков.")
@@ -616,11 +578,11 @@ async def cb_game_my(callback: CallbackQuery):
 
     g = games.get(gid)
     if not g or g["creator_id"] != uid or g["opponent_id"] is not None:
-        await send_games_list(callback.message.chat.id, callback.from_user.id, callback.message.message_id)
         return await callback.answer("Игра не найдена или уже занята.", show_alert=True)
 
     # Кнопка "Отменить" доступна только в первую минуту
     time_passed = datetime.now(timezone.utc) - g["created_at"]
+    DICE_BET_MIN_CANCEL_AGE = timedelta(minutes=1) # Константа из вашего кода
     
     rows = []
     if time_passed < DICE_BET_MIN_CANCEL_AGE:
@@ -629,8 +591,7 @@ async def cb_game_my(callback: CallbackQuery):
     rows.append([InlineKeyboardButton(text="⬅ Назад", callback_data="refresh_games")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    # ИСПРАВЛЕНО: используем edit_message_text, чтобы не засорять чат
-    await callback.message.edit_text(
+    await callback.message.answer(
         f"🎲 Ваша игра №{gid}\n"
         f"💰 Ставка: {format_rubles(g['bet'])} ₽\n\n"
         f"Ожидание соперника...",
@@ -648,6 +609,7 @@ async def cb_cancel_game(callback: CallbackQuery):
     if not g or g["creator_id"] != uid or g["opponent_id"] is not None:
         return await callback.answer("Отмена невозможна.", show_alert=True)
 
+    DICE_BET_MIN_CANCEL_AGE = timedelta(minutes=1)
     if (datetime.now(timezone.utc) - g["created_at"]) > DICE_BET_MIN_CANCEL_AGE:
         return await callback.answer(
             f"Ставку можно отменить только в течение первой минуты после создания.", 
@@ -655,16 +617,15 @@ async def cb_cancel_game(callback: CallbackQuery):
         )
 
     bet = g["bet"]
-    await change_balance(uid, bet) # ИСПРАВЛЕНО: await change_balance
+    change_balance(uid, bet)
     
     # Завершаем игру в БД (finished=1, winner_id=0, rolls=[])
-    await upsert_game(g["id"], g["creator_id"], 'dice', bet, 0, 1, winner_id=0)
+    await upsert_game(g["id"], g["creator_id"], 'dice', bet, 0, 1)
     
     if gid in games:
         del games[gid]
     
-    # ИСПРАВЛЕНО: используем edit_message_text
-    await callback.message.edit_text(
+    await callback.message.answer(
         f"❌ Ставка №{gid} отменена. {format_rubles(bet)} ₽ возвращены на баланс."
     )
     await send_games_list(callback.message.chat.id, uid)
@@ -683,7 +644,6 @@ def get_banker_game_kb(game_id: int, joiners_count: int) -> InlineKeyboardMarkup
     return InlineKeyboardMarkup(
         inline_keyboard=[
             buttons,
-            # Кнопка 'Начать бросок' доступна только Банкиру
             [InlineKeyboardButton(text="🎲 Начать бросок", callback_data=f"banker_roll_start_{game_id}")],
             [InlineKeyboardButton(text="🚫 Отмена", callback_data=f"banker_cancel_{game_id}")]
         ]
@@ -711,8 +671,8 @@ async def handle_banker_bet(message: types.Message, state: FSMContext):
     if bet_amount > get_balance(uid):
         return await message.answer(f"Недостаточно средств. Ваш баланс: {format_rubles(get_balance(uid))} ₽")
 
-    # 1. Списываем ставку у "Банкира" (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(uid, -bet_amount)
+    # 1. Списываем ставку у "Банкира"
+    change_balance(uid, -bet_amount)
 
     # 2. Создаем игру в БД
     game_id = await upsert_game(
@@ -720,7 +680,17 @@ async def handle_banker_bet(message: types.Message, state: FSMContext):
         target_score=0, finished=0
     )
     
-    # (ИСПРАВЛЕНО: Удален кэш games[game_id] для Банкира, т.к. он не обновлялся консистентно)
+    # Добавляем в кэш активных игр
+    games[game_id] = {
+        "id": game_id,
+        "creator_id": uid,
+        "game_type": 'banker',
+        "bet": bet_amount,
+        "target_score": 0,
+        "joiners": [],
+        "finished": False,
+        "created_at": datetime.now(timezone.utc),
+    }
     
     # 3. Отправляем сообщение о создании
     text = f"🎩 **Игра 'Банкир' №{game_id} создана!**\n\n" \
@@ -742,7 +712,6 @@ async def cb_banker_join(callback: CallbackQuery):
     game_id = int(callback.data.split('_')[-1])
     joiner_id = callback.from_user.id
     
-    # ИСПРАВЛЕНО: Получаем актуальные данные из БД
     game = await get_game(game_id)
     if not game or game['finished'] != 0 or game['game_type'] != 'banker' or game['target_score'] != 0:
         await callback.answer("Игра недоступна для присоединения.", show_alert=True)
@@ -763,25 +732,24 @@ async def cb_banker_join(callback: CallbackQuery):
     if get_balance(joiner_id) < bet_amount:
         return await callback.answer(f"Недостаточно средств. Ваш баланс: {format_rubles(get_balance(joiner_id))} ₽", show_alert=True)
 
-    # 1. Списываем ставку у присоединившегося (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(joiner_id, -bet_amount)
+    # 1. Списываем ставку у присоединившегося
+    change_balance(joiner_id, -bet_amount)
 
     # 2. Обновляем joiners в БД
     joiners_list.append({
         'user_id': joiner_id,
-        'username': callback.from_user.username or user_usernames.get(joiner_id) or f"ID{joiner_id}", # Загружаем из кэша памяти, если нет в ТГ
+        'username': callback.from_user.username or f"ID{joiner_id}",
         'bet_amount': bet_amount,
         'roll': None,
         'won': None,
         'processed': False
     })
     
-    # Сохраняем обратно в БД
     await upsert_game(
         game_id=game_id, creator_id=game['creator_id'], game_type='banker',
         bet_amount=bet_amount, target_score=game['target_score'], finished=0, joiners=joiners_list
     )
-    # ИСПРАВЛЕНО: Удалил games[game_id]['joiners'] = joiners_list
+    games[game_id]['joiners'] = joiners_list # Обновляем кэш
 
     await callback.answer("Вы успешно присоединились! Ожидайте броска Банкира.", show_alert=True)
     
@@ -789,11 +757,12 @@ async def cb_banker_join(callback: CallbackQuery):
     creator_user = user_usernames.get(game['creator_id'], f"ID{game['creator_id']}")
     joiners_count = len(joiners_list)
     
+    # ИСПРАВЛЕНИЕ СИНТАКСИЧЕСКОЙ ОШИБКИ: Использование простой конкатенации вместо вложенного f-string
     text = f"🎩 **Игра 'Банкир' №{game_id}**\n\n" \
            f"**Банкир:** @{creator_user}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
            f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n" \
-           f"**Присоединились:** {', '.join([f'@{j["username"]}' for j in joiners_list])}\n" \
+           f"**Присоединились:** {', '.join(['@' + j['username'] for j in joiners_list])}\n" \
            "Ожидаем присоединившихся игроков или начала броска."
     
     await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
@@ -805,10 +774,9 @@ async def cb_banker_roll_start(callback: CallbackQuery):
     game_id = int(callback.data.split('_')[-1])
     user_id = callback.from_user.id
     
-    # ИСПРАВЛЕНО: Получаем актуальные данные из БД
     game = await get_game(game_id)
-    if not game or game['finished'] != 0 or game['game_type'] != 'banker' or game['target_score'] != 0:
-        return await callback.answer("Игра недоступна или уже начата.", show_alert=True)
+    if not game or game['finished'] != 0 or game['game_type'] != 'banker':
+        return await callback.answer("Игра недоступна.", show_alert=True)
 
     if game['creator_id'] != user_id:
         return await callback.answer("Только Банкир может начать бросок.", show_alert=True)
@@ -821,12 +789,11 @@ async def cb_banker_roll_start(callback: CallbackQuery):
     creator_roll = random.randint(1, 6)
     
     # 2. Записываем бросок Банкира (target_score)
-    # ИСПРАВЛЕНО: Обновляем только БД
     await upsert_game(
         game_id=game_id, creator_id=user_id, game_type='banker', bet_amount=game['bet_amount'],
         target_score=creator_roll, finished=0, rolls=[creator_roll], joiners=joiners_list
     )
-    # ИСПРАВЛЕНО: Удалил games[game_id]['target_score'] = creator_roll 
+    games[game_id]['target_score'] = creator_roll # Обновляем кэш
 
     text = f"🎲 **Бросок Банкира в игре №{game_id}!**\n\n" \
            f"**Банкир** (@{user_usernames.get(user_id, f"ID{user_id}")}) бросил **{creator_roll}**\n\n" \
@@ -845,9 +812,7 @@ async def cb_banker_roll_start(callback: CallbackQuery):
                 reply_markup=get_joiner_roll_kb(game_id)
             )
         except Exception as e:
-            # Не используем print в рабочем коде, лучше logging
-            # print(f"Не удалось отправить сообщение игроку {joiner['user_id']}: {e}") 
-            pass
+            print(f"Не удалось отправить сообщение игроку {joiner['user_id']}: {e}")
             
     await callback.answer("Вы бросили кости! Игроки уведомлены.")
 
@@ -858,7 +823,6 @@ async def cb_banker_roll_joiner(callback: CallbackQuery):
     game_id = int(callback.data.split('_')[-1])
     user_id = callback.from_user.id
     
-    # ИСПРАВЛЕНО: Получаем актуальные данные из БД
     game = await get_game(game_id)
     if not game or game['finished'] != 0 or game['game_type'] != 'banker' or game['target_score'] == 0:
         return await callback.answer("Игра недоступна или Банкир еще не бросил.", show_alert=True)
@@ -876,33 +840,31 @@ async def cb_banker_roll_joiner(callback: CallbackQuery):
     joiner_roll = random.randint(1, 6)
     
     # Обновляем roll в списке joiners
-    updated_joiners_list = []
     for j in joiners_list:
         if j['user_id'] == user_id:
             j['roll'] = joiner_roll
-        updated_joiners_list.append(j)
+            break
     
     # Обновляем игру в БД
     await upsert_game(
         game_id=game_id, creator_id=game['creator_id'], game_type='banker',
         bet_amount=game['bet_amount'], target_score=game['target_score'], finished=0,
-        rolls=game['rolls'], joiners=updated_joiners_list
+        rolls=game['rolls'], joiners=joiners_list
     )
-    # ИСПРАВЛЕНО: Удалил games[game_id]['joiners'] = joiners_list
+    games[game_id]['joiners'] = joiners_list # Обновляем кэш
     
     await callback.message.edit_text(
         f"🎲 Вы бросили **{joiner_roll}**! Банкир бросил **{game['target_score']}**.\nОжидаем других игроков."
     )
     await callback.answer("Вы бросили кости!")
     
-    # Проверка на завершение (получаем свежий список joiners)
-    if all(j['roll'] is not None for j in updated_joiners_list):
+    # Проверка на завершение
+    if all(j['roll'] is not None for j in joiners_list):
         await finish_banker_game(game_id)
 
 
 async def finish_banker_game(game_id: int):
     """Завершает игру "Банкир" и распределяет средства."""
-    # ИСПРАВЛЕНО: Получаем актуальные данные из БД
     game = await get_game(game_id)
     if not game or game['finished'] != 0 or game['game_type'] != 'banker':
         return
@@ -912,11 +874,6 @@ async def finish_banker_game(game_id: int):
     bet_amount = game['bet_amount'] 
     joiners_list = game['joiners']
     
-    # Проверка, что все бросили
-    if not all(j['roll'] is not None for j in joiners_list):
-         # ИСПРАВЛЕНО: Добавил защиту от случайного вызова finish
-        return 
-
     commission_rate = COMMISSION_RATE
 
     results_text = f"🎉 **Игра 'Банкир' №{game_id} завершена!** 🎉\n\n"
@@ -934,13 +891,11 @@ async def finish_banker_game(game_id: int):
         
         if joiner_wins:
             # Присоединившийся выиграл
-            commission_win = int(bet_amount * commission_rate)
-            win_amount = bet_amount - commission_win
-            # Возврат ставки + чистый выигрыш (ИСПРАВЛЕНО: await change_balance)
-            await change_balance(joiner['user_id'], bet_amount + win_amount) 
+            win_amount = bet_amount - int(bet_amount * commission_rate)
+            change_balance(joiner['user_id'], bet_amount + win_amount) # Возврат ставки + чистый выигрыш
             
             banker_profit_before_commission -= win_amount 
-            total_banker_commission += commission_win # Комиссия с выигрыша игрока
+            total_banker_commission += int(bet_amount * commission_rate)
             
             results_text += f"🔹 @{joiner['username']} бросил **{joiner_roll}** и **ВЫИГРАЛ** (+{win_amount} ₽)\n"
         else:
@@ -951,19 +906,20 @@ async def finish_banker_game(game_id: int):
         joiner['processed'] = True
 
     # 2. Выплата Банкиру
+    
     final_banker_profit = banker_profit_before_commission
     
     # Комиссия Банкира снимается только с его чистого дохода (Banker wins - Banker losses)
     if banker_profit_before_commission > 0:
         banker_commission_on_win = int(banker_profit_before_commission * commission_rate)
         final_banker_profit = banker_profit_before_commission - banker_commission_on_win
-        total_banker_commission += banker_commission_on_win # Комиссия с выигрыша банкира
+        total_banker_commission += banker_commission_on_win
     
-    # Зачисление комиссии админу (общая со всех выигрышей) (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(MAIN_ADMIN_ID, total_banker_commission)
+    # Зачисление комиссии админу (общая со всех выигрышей)
+    change_balance(MAIN_ADMIN_ID, total_banker_commission)
     
-    # Возврат Банкиру его ставки + чистый доход/убыток (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(creator_id, bet_amount + final_banker_profit) 
+    # Возврат Банкиру его ставки + чистый доход/убыток
+    change_balance(creator_id, bet_amount + final_banker_profit) 
     
     results_text += f"\n**Итог Банкира:**\n" \
                     f"Начальная ставка: {format_rubles(bet_amount)} ₽\n" \
@@ -980,11 +936,11 @@ async def finish_banker_game(game_id: int):
     if game_id in games:
         del games[game_id]
     
-    # Уведомление в чат 
+    # Уведомление в чат (отправляем Банкиру, чтобы он переслал или сообщил в чат)
     try:
         await bot.send_message(creator_id, results_text)
     except Exception:
-        pass 
+        pass # Если Банкир заблокировал бота
 
 @dp.callback_query(F.data.startswith("banker_cancel_"))
 async def cb_banker_cancel(callback: CallbackQuery):
@@ -992,18 +948,17 @@ async def cb_banker_cancel(callback: CallbackQuery):
     game_id = int(callback.data.split('_')[-1])
     user_id = callback.from_user.id
     
-    # ИСПРАВЛЕНО: Получаем актуальные данные из БД
     game = await get_game(game_id)
-    if not game or game['finished'] != 0 or game['game_type'] != 'banker' or game['target_score'] != 0:
-        return await callback.answer("Игра не найдена, уже завершена или начался бросок.", show_alert=True)
+    if not game or game['finished'] != 0 or game['game_type'] != 'banker':
+        return await callback.answer("Игра не найдена или уже завершена.", show_alert=True)
 
     if game['creator_id'] != user_id:
         return await callback.answer("Только Банкир может отменить игру.", show_alert=True)
     
-    # Возвращаем ставки Банкиру и всем присоединившимся (ИСПРАВЛЕНО: await change_balance)
-    await change_balance(game['creator_id'], game['bet_amount'])
+    # Возвращаем ставки Банкиру и всем присоединившимся
+    change_balance(game['creator_id'], game['bet_amount'])
     for joiner in game.get('joiners', []):
-        await change_balance(joiner['user_id'], joiner['bet_amount'])
+        change_balance(joiner['user_id'], joiner['bet_amount'])
         
     # Завершаем игру (winner_id=0 для отмененных)
     await upsert_game(game_id, game['creator_id'], 'banker', game['bet_amount'], 0, 1, winner_id=0)
@@ -1056,8 +1011,7 @@ async def handle_transfer_recipient(message: types.Message, state: FSMContext):
     else:
         target_id = resolve_user_by_username(text)
 
-    if not target_id or get_balance(target_id) == START_BALANCE_COINS: 
-        # Дополнительная проверка, что пользователь есть в кэше/балансах
+    if not target_id:
         return await message.answer(
             "Не удалось найти пользователя.\n"
             "Убедитесь, что он уже писал боту, и введите его ID или @username."
@@ -1090,9 +1044,9 @@ async def handle_transfer_amount(message: types.Message, state: FSMContext):
         data = await state.get_data()
         target_id = data.get("target_id")
 
-        # Выполнение перевода (ИСПРАВЛЕНО: await change_balance)
-        await change_balance(uid, -amount)
-        await change_balance(target_id, amount)
+        # Выполнение перевода
+        change_balance(uid, -amount)
+        change_balance(target_id, amount)
 
         await add_transfer(uid, target_id, amount)
 
@@ -1168,8 +1122,6 @@ async def handle_withdraw_amount(message: types.Message, state: FSMContext):
 @dp.message(Withdraw.waiting_for_details)
 async def handle_withdraw_details(message: types.Message, state: FSMContext):
     """Обработка реквизитов и отправка заявки."""
-    # (ИСПРАВЛЕНО: Изменена логика: баланс не уменьшается сразу, уменьшать должен админ)
-    
     uid = message.from_user.id
     details = message.text
     data = await state.get_data()
@@ -1237,33 +1189,28 @@ async def cb_menu_rating(m: types.Message | CallbackQuery):
 async def cb_rating_dice(callback: CallbackQuery):
     """Показывает рейтинг игроков в "Кости"."""
     
-    # finished_games содержит все игры за 30 дней, как в БД.
+    # Logic from the old code, simplified and merged with new db function
     finished_games, _ = await get_users_profit_and_games_30_days()
     now = datetime.now(timezone.utc)
     user_stats = {} 
     
     for g in finished_games:
+        # finished_at теперь должен быть datetime благодаря db.py
         finished_at = g["finished_at"] 
-        # Дополнительная проверка на 30 дней (хотя db.py должен был отфильтровать)
         if (now - finished_at) > timedelta(days=30):
             continue
             
-        # Профит рассчитывается для создателя
-        creator_id = g.get("creator_id")
-        if creator_id:
-            stats = user_stats.setdefault(creator_id, {"profit": 0, "games": 0})
-            profit = calculate_profit(creator_id, g) 
+        for uid in (g.get("creator_id"), g.get("opponent_id")):
+            if uid is None:
+                continue
+            
+            stats = user_stats.setdefault(uid, {"profit": 0, "games": 0})
+            
+            # Используем данные игры и функцию calculate_profit
+            profit = calculate_profit(uid, g) 
+            
             stats["profit"] += profit
             stats["games"] += 1
-
-        # Профит рассчитывается для оппонента (если есть)
-        opponent_id = g.get("opponent_id")
-        if opponent_id:
-            stats = user_stats.setdefault(opponent_id, {"profit": 0, "games": 0})
-            profit = calculate_profit(opponent_id, g) 
-            stats["profit"] += profit
-            stats["games"] += 1
-
 
     top_list = sorted(user_stats.items(), key=lambda x: (x[1]['profit'], -x[1]['games']), reverse=True)
     
@@ -1305,10 +1252,7 @@ async def cb_rating_banker(callback: CallbackQuery):
             emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
             profit_str = f"+{banker['profit']}" if banker['profit'] > 0 else f"{banker['profit']}"
             
-            # ИСПРАВЛЕНО: предполагаем, что db.py вернул username
-            username = banker.get('username') or user_usernames.get(banker['creator_id']) or f"ID{banker['creator_id']}"
-            
-            text += f"{emoji} **@{username}** — **{format_rubles(profit_str)} ₽**\n"
+            text += f"{emoji} **@{banker['username']}** — **{format_rubles(profit_str)} ₽**\n"
             
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1334,8 +1278,7 @@ async def msg_profile(m: types.Message):
     reg_date_str = reg_date_dt.strftime("%d.%m.%Y %H:%M:%S") if reg_date_dt else "Неизвестно"
     
     dice_games_count = await get_user_dice_games_count(uid)
-    # ИСПРАВЛЕНО: Заменил на более корректное имя, но функция должна быть реализована в db.py
-    banker_games_count = await get_user_raffle_bets_count(uid) # TODO: Заменить на get_user_banker_games_count
+    banker_games_count = await get_user_raffle_bets_count(uid) # Using raffle count as a temporary placeholder for banker games count
 
     text = (
         f"👤 Ваш Профиль:\n\n"
@@ -1389,7 +1332,7 @@ async def cmd_addbalance(m: types.Message):
 
     uid = int(parts[1])
     amount = int(parts[2])
-    await change_balance(uid, amount) # ИСПРАВЛЕНО: await change_balance
+    change_balance(uid, amount)
     await m.answer(f"✅ Баланс {uid} увеличен на {format_rubles(amount)} ₽. Теперь: {format_rubles(get_balance(uid))} ₽")
 
 @dp.message(Command("removebalance"))
@@ -1402,7 +1345,7 @@ async def cmd_removebalance(m: types.Message):
 
     uid = int(parts[1])
     amount = int(parts[2])
-    await change_balance(uid, -amount) # ИСПРАВЛЕНО: await change_balance
+    change_balance(uid, -amount)
     await m.answer(f"✅ Баланс {uid} уменьшен на {format_rubles(amount)} ₽. Теперь: {format_rubles(get_balance(uid))} ₽")
 
 @dp.message(Command("setbalance"))
@@ -1415,7 +1358,7 @@ async def cmd_setbalance(m: types.Message):
 
     uid = int(parts[1])
     amount = int(parts[2])
-    await set_balance(uid, amount) # ИСПРАВЛЕНО: await set_balance
+    set_balance(uid, amount)
     await m.answer(f"✅ Баланс {uid} установлен на {format_rubles(amount)} ₽")
 
 @dp.message(Command("adminprofit"))
@@ -1487,7 +1430,7 @@ async def ton_deposit_worker():
                     processed_ton_tx.add(tx_hash)
                     continue
 
-                await change_balance(user_id, coins) # ИСПРАВЛЕНО: await change_balance
+                change_balance(user_id, coins)
                 processed_ton_tx.add(tx_hash)
 
                 await add_ton_deposit(tx_hash, user_id, ton_amount, coins, comment)
@@ -1516,8 +1459,7 @@ async def ton_deposit_worker():
                     pass
 
         except Exception as e:
-            # print("Ошибка в ton_deposit_worker:", e) # Лучше использовать logging
-            pass
+            print("Ошибка в ton_deposit_worker:", e)
 
         await asyncio.sleep(20)
 
@@ -1529,19 +1471,16 @@ async def cb_my_games(callback: CallbackQuery):
 
     # Копирование логики статистики из вашего старого кода, но с использованием обновленной get_user_games
     now = datetime.now(timezone.utc)
-    # finished - список игр пользователя из БД
     finished = await get_user_games(uid)
 
     stats = {"month": {"games": 0, "profit": 0}, "week": {"games": 0, "profit": 0}, "day": {"games": 0, "profit": 0}}
     
-    history = []
-
     for g in finished:
         if not g.get("finished_at"): continue
-        
+        # finished_at теперь должен быть datetime благодаря db.py
         finished_at = g["finished_at"] 
         delta = now - finished_at
-        p = calculate_profit(uid, g) 
+        p = calculate_profit(uid, g) # Используем обновленную функцию
 
         if delta <= timedelta(days=30):
             stats["month"]["games"] += 1
@@ -1553,78 +1492,44 @@ async def cb_my_games(callback: CallbackQuery):
             stats["day"]["games"] += 1
             stats["day"]["profit"] += p
             
-        # Логика для истории 
-        if g.get('game_type') == 'dice':
-            if uid == g["creator_id"]:
-                rolls = g.get("rolls")
-                my = rolls[0] if rolls and len(rolls) > 0 else "?"
-                opp = rolls[1] if rolls and len(rolls) > 1 else "?"
-            else:
-                rolls = g.get("rolls")
-                my = rolls[1] if rolls and len(rolls) > 1 else "?"
-                opp = rolls[0] if rolls and len(rolls) > 0 else "?"
-
-            profit = calculate_profit(uid, g)
-            if profit > 0:
-                emoji, text_res = "🟩", "Победа"
-            elif profit < 0:
-                emoji, text_res = "🟥", "Проигрыш"
-            else:
-                emoji, text_res = "⚪", "Ничья"
-
-            history.append({
-                "bet": g["bet_amount"],
-                "emoji": emoji,
-                "text": text_res,
-                "my": my,
-                "opp": opp
-            })
-        elif g.get('game_type') == 'banker':
-            profit = calculate_profit(uid, g)
-            
-            if uid == g["creator_id"]:
-                # Банкир
-                if profit > 0:
-                    emoji, text_res = "👑🟩", f"Банкир: Профит ({format_rubles(profit)})"
-                elif profit < 0:
-                    emoji, text_res = "👑🟥", f"Банкир: Убыток ({format_rubles(profit)})"
-                else:
-                    emoji, text_res = "👑⚪", "Банкир: Ноль"
-                my, opp = g.get('target_score', '?'), 'Игроки'
-            else:
-                # Присоединившийся
-                joiner_info = next((j for j in g.get('joiners', []) if j['user_id'] == uid), None)
-                if profit > 0:
-                    emoji, text_res = "🤝🟩", "Игрок: Победа"
-                elif profit < 0:
-                    emoji, text_res = "🤝🟥", "Игрок: Проигрыш"
-                else:
-                    emoji, text_res = "🤝⚪", "Игрок: Ноль"
-                my, opp = joiner_info.get('roll', '?') if joiner_info else '?', g.get('target_score', '?')
-
-            history.append({
-                "bet": g["bet_amount"],
-                "emoji": emoji,
-                "text": text_res,
-                "my": my,
-                "opp": opp
-            })
-            
-    # Форматирование профита
     def ps(v): return ("+" if v > 0 else "") + format_rubles(v)
 
     stats_text = (
-        f"📋 Ваша статистика:\n\n"
-        f"📊 Общие игры за месяц: {stats['month']['games']}\n"
+        f"🎲 Кости за месяц: {stats['month']['games']}\n"
         f"└ 💸 Профит: {ps(stats['month']['profit'])} ₽\n\n"
-        f"📊 За неделю: {stats['week']['games']}\n"
+        f"🎲 За неделю: {stats['week']['games']}\n"
         f"└ 💸 Профит: {ps(stats['week']['profit'])} ₽\n\n"
-        f"📊 За сутки: {stats['day']['games']}\n"
-        f"└ 💸 Профит: {ps(stats['day']['profit'])} ₽\n\n"
-        f"📖 **История последних игр (бросок:противник)**"
+        f"🎲 За сутки: {stats['day']['games']}\n"
+        f"└ 💸 Профит: {ps(stats['day']['profit'])} ₽"
     )
 
-    
+    history = []
+    for g in finished[:30]:
+        if uid == g["creator_id"]:
+            rolls = g.get("rolls")
+            my = rolls[0] if rolls and len(rolls) > 0 else "?"
+            opp = rolls[1] if rolls and len(rolls) > 1 else "?"
+        else:
+            rolls = g.get("rolls")
+            my = rolls[1] if rolls and len(rolls) > 1 else "?"
+            opp = rolls[0] if rolls and len(rolls) > 0 else "?"
+
+        profit = calculate_profit(uid, g)
+        if profit > 0:
+            emoji, text_res = "🟩", "Победа"
+        elif profit < 0:
+            emoji, text_res = "🟥", "Проигрыш"
+        else:
+            emoji, text_res = "⚪", "Ничья"
+
+        history.append({
+            "bet": g["bet_amount"],
+            "emoji": emoji,
+            "text": text_res,
+            "my": my,
+            "opp": opp
+        })
+        
     # Копирование логики клавиатуры истории из вашего старого кода
     rows = []
     HISTORY_PAGE_SIZE = 10
@@ -1634,8 +1539,7 @@ async def cb_my_games(callback: CallbackQuery):
         rows.append([InlineKeyboardButton(text="История пуста", callback_data="ignore")])
     else:
         pages = (total + HISTORY_PAGE_SIZE - 1) // HISTORY_PAGE_SIZE
-        # Убедимся, что page не выходит за границы
-        page = max(0, min(page, pages - 1)) 
+        page = max(0, min(page, pages - 1))
 
         start = page * HISTORY_PAGE_SIZE
         end = start + HISTORY_PAGE_SIZE
@@ -1672,8 +1576,6 @@ async def cb_menu_games(callback: CallbackQuery):
     await callback.answer()
 
 # === HELP (помощь) ===
-# ... (Остальной код помощи без изменений)
-
 @dp.callback_query(F.data == "help")
 async def cb_help(callback: CallbackQuery):
     kb = InlineKeyboardMarkup(
@@ -1684,8 +1586,7 @@ async def cb_help(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅ Назад", callback_data="menu_games")],
         ]
     )
-    # ИСПРАВЛЕНО: используем edit_message_text, чтобы не засорять чат
-    await callback.message.edit_text("🐼 Выберите раздел помощи:", reply_markup=kb) 
+    await callback.message.answer("🐼 Выберите раздел помощи:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(F.data == "help_dice")
@@ -1697,7 +1598,7 @@ async def cb_help_dice(callback: CallbackQuery):
         "Результат генерируется на стороне Телеграм.\n"
         f"3. Ставку можно отменить **только в течение первой минуты** после создания."
     )
-    await callback.message.edit_text(text) # ИСПРАВЛЕНО: edit_text
+    await callback.message.answer(text)
     await callback.answer()
 
 @dp.callback_query(F.data == "help_banker")
@@ -1711,7 +1612,7 @@ async def cb_help_banker(callback: CallbackQuery):
         "5. **Выигрыш Банкира:** Если Банкир выбросил больше, он забирает ставку Игрока.\n"
         "6. **Банкир** может отменить игру до того, как бросит кости."
     )
-    await callback.message.edit_text(text) # ИСПРАВЛЕНО: edit_text
+    await callback.message.answer(text)
     await callback.answer()
 
 @dp.callback_query(F.data == "help_balance")
@@ -1724,7 +1625,7 @@ async def cb_help_balance(callback: CallbackQuery):
         "3. Переводы: Доступны между игроками в разделе 'Баланс'.\n"
         f"4. Комиссия: С каждой игры (Кости, Банкир) удерживается {COMMISSION_RATE*100}% комиссии."
     )
-    await callback.message.edit_text(text) # ИСПРАВЛЕНО: edit_text
+    await callback.message.answer(text)
     await callback.answer()
 
 # ========================
