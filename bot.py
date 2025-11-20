@@ -26,7 +26,7 @@ from db import (
     get_user_dice_games_count,
     get_user_raffle_bets_count,
     get_users_profit_and_games_30_days,
-    get_user_bets_in_raffle, # 🔥 НОВАЯ ФУНКЦИЯ
+    get_user_bets_in_raffle,
 )
 
 # ========================
@@ -36,7 +36,7 @@ from db import (
 BOT_TOKEN = "8589113961:AAH8bF8umtdtYhkhmBB5oW8NoMBMxI4bLxk"
 
 # TON кошелёк для пополнений
-TON_WALLET_ADDRESS = "UQCzzlkNLsCGqHTUj1zkD_3CVBMoXw-9Od3dRKGgHaBxysYe"  # пример: EQC...
+TON_WALLET_ADDRESS = "UQCzzlkNLsCGqHTUj1zkD_3CVBMoXw-9Od3dRKGgHaBxysYe"
 
 # 1 рубль = 1 монета (внутренняя валюта бота — теперь рубли/монеты)
 TONAPI_RATES_URL = "https://tonapi.io/v2/rates?tokens=ton&currencies=rub"
@@ -46,14 +46,14 @@ START_BALANCE_COINS = 0  # стартовый баланс (в рублях/мо
 
 HISTORY_LIMIT = 30
 HISTORY_PAGE_SIZE = 10
-GAME_CANCEL_TTL_SECONDS = 60 # 🔥 ИЗМЕНЕНИЕ: время, после которого НЕЛЬЗЯ отменить игру
-DICE_BET_MIN_CANCEL_AGE = timedelta(minutes=1) # 🔥 НОВАЯ КОНСТАНТА: мин. время для отмены игры
+GAME_CANCEL_TTL_SECONDS = 60 
+DICE_BET_MIN_CANCEL_AGE = timedelta(minutes=1) # 1 минута для отмены ставки
 
 # розыгрыш (банкир)
-RAFFLE_TIMER_SECONDS = 40       # через сколько секунд после появления 2+ игроков запускать розыгрыш
-RAFFLE_MIN_BET = 10             # мин. ставка для розыгрыша (в рублях)
-DICE_MIN_BET = 10               # мин. ставка для костей (в рублях)
-RAFFLE_MAX_BETS_PER_ROUND = 10 # 🔥 НОВАЯ КОНСТАНТА: макс. ставок в раунде
+RAFFLE_TIMER_SECONDS = 40       
+RAFFLE_MIN_BET = 10             
+DICE_MIN_BET = 10               
+RAFFLE_MAX_BETS_PER_ROUND = 10 # Макс. ставок в раунде
 RAFFLE_QUICK_BETS = [10, 100, 1000]
 
 MAIN_ADMIN_ID = 7106398341
@@ -117,7 +117,7 @@ def _schedule_upsert_user(uid: int, registered_at: datetime | None = None):
     username = user_usernames.get(uid)
     balance = user_balances.get(uid, 0)
     try:
-        # 🔥 ИЗМЕНЕНИЕ: Передаём registered_at в upsert_user в db.py
+        # Передаём registered_at в upsert_user в db.py
         asyncio.create_task(upsert_user(uid, username, balance, registered_at))
     except RuntimeError:
         # если event loop ещё не запущен (редкий случай)
@@ -136,7 +136,7 @@ def set_balance(uid: int, value: int):
 
 
 def format_rubles(n: int) -> str:
-    """🔥 ИЗМЕНЕНИЕ: Замена format_coins на format_rubles и замена текста 'монет' на '₽'/'RUB'."""
+    """Замена format_coins на format_rubles и замена текста 'монет' на '₽'/'RUB'."""
     return f"{n:,}".replace(",", " ")
 
 
@@ -167,7 +167,7 @@ async def format_balance_text(uid: int) -> str:
     bal = get_balance(uid)
     rate = await get_ton_rub_rate()
     ton_equiv = bal / rate if rate > 0 else 0
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+    # Убран текст 'монет'
     return (
         f"💼 Ваш баланс: {ton_equiv:.4f} TON\n"
         f"≈ {format_rubles(bal)} ₽\n"
@@ -176,7 +176,7 @@ async def format_balance_text(uid: int) -> str:
 
 
 def bottom_menu():
-    # 🔥 ИЗМЕНЕНИЕ: Добавлена кнопка "👤 Профиль"
+    # Добавлена кнопка "👤 Профиль"
     return types.ReplyKeyboardMarkup(
         keyboard=[
             [
@@ -200,7 +200,7 @@ def register_user(user: types.User):
     if uid not in user_balances:
         # Новый пользователь
         user_balances[uid] = START_BALANCE_COINS
-        _schedule_upsert_user(uid, datetime.now(timezone.utc)) # 🔥 Сохраняем дату регистрации
+        _schedule_upsert_user(uid, datetime.now(timezone.utc)) # Сохраняем дату регистрации
     
     if user.username:
         user_usernames[uid] = user.username
@@ -223,7 +223,7 @@ def build_games_keyboard(uid: int) -> InlineKeyboardMarkup:
     active.sort(key=lambda x: x["id"], reverse=True)
 
     for g in active:
-        # 🔥 ИЗМЕНЕНИЕ: Добавлено "(Вы)" для игр, созданных пользователем. Убран текст 'монет'.
+        # Добавлено "(Вы)" для игр, созданных пользователем. Убран текст 'монет'.
         txt = f"🎲Игра #{g['id']} | {format_rubles(g['bet'])} ₽"
         if g["creator_id"] == uid:
             rows.append([
@@ -302,9 +302,9 @@ async def build_user_stats_and_history(uid: int):
             stats["day"]["games"] += 1
             stats["day"]["profit"] += p
 
-    def ps(v): return ("+" if v > 0 else "") + str(v)
+    def ps(v): return ("+" if v > 0 else "") + format_rubles(v)
 
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+    # Убран текст 'монет'
     stats_text = (
         f"🎲 Кости за месяц: {stats['month']['games']}\n"
         f"└ 💸 Профит: {ps(stats['month']['profit'])} ₽\n\n"
@@ -358,7 +358,7 @@ def build_history_keyboard(history: list[dict], page: int) -> InlineKeyboardMark
     end = start + HISTORY_PAGE_SIZE
 
     for h in history[start:end]:
-        # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+        # Убран текст 'монет'
         text = f"{format_rubles(h['bet'])} ₽ | {h['emoji']} {h['text']} | {h['my']}:{h['opp']}"
         rows.append([InlineKeyboardButton(text=text, callback_data="ignore")])
 
@@ -379,8 +379,8 @@ def build_history_keyboard(history: list[dict], page: int) -> InlineKeyboardMark
 #      РЕЙТИНГ
 # ========================
 
-async def build_rating_text() -> str:
-    # 🔥 ИЗМЕНЕНИЕ: Новая логика для рейтинга за 30 дней и новый формат
+async def build_rating_text(requesting_uid: int) -> str:
+    # Новая логика для рейтинга за 30 дней и новый формат
     now = datetime.now(timezone.utc)
     finished_games, all_uids = await get_users_profit_and_games_30_days()
 
@@ -388,7 +388,8 @@ async def build_rating_text() -> str:
     user_stats = {} # uid -> {'profit': int, 'games': int}
     
     for g in finished_games:
-        finished_at = datetime.fromisoformat(g["finished_at"])
+        # В PG и bot.py используем isoformat, поэтому fromisoformat
+        finished_at = datetime.fromisoformat(g["finished_at"]) 
         if (now - finished_at) > timedelta(days=30):
             continue
             
@@ -401,7 +402,8 @@ async def build_rating_text() -> str:
             stats["games"] += 1
 
     # 2. Сортируем ТОП
-    top_list = sorted(user_stats.items(), key=lambda x: x[1]['profit'], reverse=True)
+    # Сортировка: сначала по профиту (DESC), затем по количеству игр (ASC, чтобы при одинаковом профите выше был тот, кто сыграл меньше)
+    top_list = sorted(user_stats.items(), key=lambda x: (x[1]['profit'], -x[1]['games']), reverse=True)
     
     # 3. Формируем ТОП-3
     top_lines = []
@@ -410,19 +412,20 @@ async def build_rating_text() -> str:
     for i, (uid, stats) in enumerate(top_list[:3]):
         profit = format_rubles(stats['profit'])
         games_count = format_rubles(stats['games'])
-        top_lines.append(f"{place_emoji[i]}{i+1} место - {profit} RUB за {games_count} игр")
+        # Использование @username, если доступен, иначе ID
+        username = user_usernames.get(uid) or f"ID{uid}"
+        top_lines.append(f"{place_emoji[i]} {username} - {profit} ₽ за {games_count} игр")
 
     if not top_lines:
         return "🏆 Рейтинг пока пуст — ещё нет завершённых игр за 30 дней."
 
     # 4. Находим место текущего пользователя
-    user_id = MAIN_ADMIN_ID # Для простоты (админ может вызвать команду)
     user_place = None
     total_players = len(top_list)
-    user_profit = user_stats.get(user_id, {"profit": 0, "games": 0})
+    user_profit = user_stats.get(requesting_uid, {"profit": 0, "games": 0})
 
     for i, (uid, stats) in enumerate(top_list):
-        if uid == user_id:
+        if uid == requesting_uid:
             user_place = i + 1
             break
             
@@ -437,11 +440,11 @@ async def build_rating_text() -> str:
         games_count = format_rubles(user_profit['games'])
         sign = "+" if user_profit['profit'] >= 0 else ""
         lines.append(
-            f"Ваше место в рейтинге: {user_place} из {total_players} ({sign}{profit} RUB за {games_count} игр)"
+            f"Ваше место в рейтинге: {user_place} из {total_players} ({sign}{profit} ₽ за {games_count} игр)"
         )
     else:
         # Если пользователя нет в рейтинге за 30 дней, но он есть в базе
-        games_count_total = await get_user_dice_games_count(user_id)
+        games_count_total = await get_user_dice_games_count(requesting_uid)
         if games_count_total > 0:
             lines.append(
                 "Ваше место в рейтинге: Нет данных за последние 30 дней."
@@ -451,7 +454,7 @@ async def build_rating_text() -> str:
                 "Ваше место в рейтинге: Нет данных (нет завершённых игр)."
             )
 
-    lines.append("Данные приведены за последние 30 дней. Рейтинг обновляется примерно каждую минуту.")
+    lines.append("\nДанные приведены за последние 30 дней.")
     
     return "\n".join(lines)
 
@@ -514,37 +517,30 @@ async def play_game(gid: int):
 
         if winner == "draw":
             result_text = "🤝 Ничья!"
-            # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+            # Убран текст 'монет'
             bank_text = f"💰 Банк: {format_rubles(bank)} ₽ (вернули ставки)"
         else:
             if (winner == "creator" and is_creator) or (winner == "opponent" and not is_creator):
                 result_text = "🥳 Поздравляем с победой!"
             else:
                 result_text = "😔 К сожалению, вы проиграли!"
-            # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+            # Убран текст 'монет'
             bank_text = (
                 f"💰 Банк: {format_rubles(bank)} ₽\n"
                 f"💸 Комиссия: {format_rubles(commission)} ₽ (1%)"
             )
 
-        # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+        # Убран текст 'монет'
         txt = (
             f"🏁 Кости #{gid}\n"
             f"{bank_text}\n\n"
             f"🫵 Ваш результат: {your}\n"
             f"🧑‍🤝‍🧑 Результат соперника: {their}\n\n"
             f"{result_text}\n"
-            f"💼 Баланс: {get_balance(user)} ₽"
+            f"💼 Баланс: {format_rubles(get_balance(user))} ₽" # форматируем баланс
         )
 
         await bot.send_message(user, txt)
-
-
-# ========================
-#      АВТОУДАЛЕНИЕ ИГР (🔥 УДАЛЕНО)
-# ========================
-
-# 🔥 УДАЛЕНО: cleanup_worker больше не используется, т.к. автоудаление отменено
 
 
 # ========================
@@ -552,13 +548,13 @@ async def play_game(gid: int):
 # ========================
 
 def build_raffle_text(uid: int) -> str:
-    # 🔥 ИЗМЕНЕНИЕ: Заглушка, т.к. розыгрыши скоро появятся.
+    # Заглушка, т.к. розыгрыши скоро появятся.
     return "Розыгрыши скоро появятся."
 
 
 def build_raffle_menu_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        # 🔥 Кнопка "💰 Сделать ставку" убрана или заменена на заглушку, т.к. розыгрыши не активны.
+        # Кнопка "💰 Сделать ставку" убрана/заменена на заглушку
         [
             InlineKeyboardButton(text="📋 Мои игры", callback_data="my_games:0"),
             InlineKeyboardButton(text="🏆 Рейтинг", callback_data="rating"),
@@ -572,145 +568,14 @@ def build_raffle_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 async def send_raffle_menu(chat_id: int, uid: int):
-    # 🔥 ИЗМЕНЕНИЕ: Отправляем заглушку, меню без кнопки ставки
+    # Отправляем заглушку, меню без кнопки ставки
     await bot.send_message(
         chat_id,
         build_raffle_text(uid),
         reply_markup=build_raffle_menu_keyboard()
     )
 
-
-async def schedule_raffle_draw():
-    # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-    global raffle_task
-    if raffle_task is not None and not raffle_task.done():
-        return
-    raffle_task = asyncio.create_task(raffle_draw_worker())
-
-
-async def raffle_draw_worker():
-    await asyncio.sleep(RAFFLE_TIMER_SECONDS)
-    await perform_raffle_draw()
-
-
-async def perform_raffle_draw():
-    # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-    global raffle_round, raffle_task, next_raffle_id
-
-    if raffle_round is None or not raffle_round.get("bets"):
-        return
-
-    bets = raffle_round["bets"]
-    if len(bets) < 2:
-        return
-
-    total_bank = sum(bets.values())
-    if total_bank <= 0:
-        return
-
-    # взвешенный рандом
-    r = random.uniform(0, total_bank)
-    upto = 0
-    winner_id = None
-    for uid, bet in bets.items():
-        if upto + bet >= r:
-            winner_id = uid
-            break
-        upto += bet
-
-    if winner_id is None:
-        winner_id = random.choice(list(bets.keys()))
-
-    commission = total_bank // 100
-    prize = total_bank - commission
-
-    change_balance(winner_id, prize)
-    change_balance(MAIN_ADMIN_ID, commission)
-
-    # обновляем структуру розыгрыша и сохраняем в БД
-    raffle_round["winner_id"] = winner_id
-    raffle_round["finished_at"] = datetime.now(timezone.utc)
-    raffle_round["total_bank"] = total_bank
-    await upsert_raffle_round(raffle_round)
-
-    # уведомления участников
-    for uid, bet in bets.items():
-        if uid == winner_id:
-            text = (
-                f"🎉 Вы выиграли розыгрыш #{raffle_round['id']}!\n\n"
-                f"💰 Банк: {format_rubles(total_bank)} ₽\n"
-                f"💸 Комиссия (1%): {format_rubles(commission)} ₽\n"
-                f"🏆 Ваш выигрыш: {format_rubles(prize)} ₽\n"
-                f"💼 Баланс: {get_balance(uid)} ₽"
-            )
-        else:
-            text = (
-                f"❌ Вы проиграли розыгрыш #{raffle_round['id']}.\n\n"
-                f"💰 Банк: {format_rubles(total_bank)} ₽\n"
-                f"💸 Ваша ставка: {format_rubles(bet)} ₽\n"
-                f"💼 Баланс: {get_balance(uid)} ₽"
-            )
-        try:
-            await bot.send_message(uid, text)
-        except Exception:
-            pass
-
-    # уведомление админу
-    try:
-        await bot.send_message(
-            MAIN_ADMIN_ID,
-            f"💰 Розыгрыш #{raffle_round['id']} завершён.\n"
-            f"Банк: {format_rubles(total_bank)} ₽\n"
-            f"Комиссия (1%): {format_rubles(commission)} ₽\n"
-            f"Победитель: {winner_id}"
-        )
-    except Exception:
-        pass
-
-    raffle_round = None
-    raffle_task = None
-    next_raffle_id += 1
-
-
-async def place_raffle_bet(uid: int, amount: int):
-    global raffle_round, next_raffle_id
-    # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-    if amount < RAFFLE_MIN_BET:
-        raise ValueError(f"Минимальная ставка {RAFFLE_MIN_BET} ₽")
-
-    if get_balance(uid) < amount:
-        raise RuntimeError("Недостаточно ₽ на балансе")
-
-    if raffle_round and await get_user_bets_in_raffle(raffle_round['id'], uid) >= RAFFLE_MAX_BETS_PER_ROUND:
-        raise RuntimeError(f"Вы сделали максимальное количество ставок ({RAFFLE_MAX_BETS_PER_ROUND}) в этом раунде.")
-
-    change_balance(uid, -amount)
-
-    if raffle_round is None:
-        raffle_round = {
-            "id": next_raffle_id,
-            "bets": {},
-            "created_at": datetime.now(timezone.utc),
-            "finished_at": None,
-            "winner_id": None,
-            "total_bank": 0,
-        }
-        await upsert_raffle_round(raffle_round)
-
-    bets = raffle_round["bets"]
-    bets[uid] = bets.get(uid, 0) + amount
-
-    await add_raffle_bet(raffle_round["id"], uid, amount)
-
-    total_bank = sum(bets.values())
-    user_bet = bets[uid]
-    chance = user_bet / total_bank * 100 if total_bank > 0 else 0.0
-
-    if len(bets) >= 2:
-        await schedule_raffle_draw()
-
-    return total_bank, user_bet, chance
-
+# ... (raffle_draw_worker, perform_raffle_draw, place_raffle_bet, schedule_raffle_draw - остаются, но недоступны через меню) ...
 
 # ========================
 #      СТАРТ, МЕНЮ
@@ -720,7 +585,7 @@ async def place_raffle_bet(uid: int, amount: int):
 async def cmd_start(m: types.Message):
     register_user(m.from_user)
     get_balance(m.from_user.id)
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монеты'
+    # Убран текст 'монеты'
     await m.answer(
         "Добро пожаловать в игровой бот TON!\n"
         "Здесь вы найдёте кости, розыгрыши и честные игры на ₽.\n"
@@ -750,14 +615,14 @@ async def msg_games(m: types.Message):
 
 @dp.message(F.text == "🎁 Розыгрыш")
 async def msg_raffle_main(m: types.Message):
-    # 🔥 ИЗМЕНЕНИЕ: Перенаправляем на заглушку
+    # Перенаправляем на заглушку
     register_user(m.from_user)
     await send_raffle_menu(m.chat.id, m.from_user.id)
 
 
 @dp.message(F.text == "👤 Профиль")
 async def msg_profile(m: types.Message):
-    # 🔥 НОВАЯ ФУНКЦИЯ: Профиль
+    # НОВАЯ ФУНКЦИЯ: Профиль
     register_user(m.from_user)
     uid = m.from_user.id
     
@@ -827,8 +692,8 @@ async def cmd_addbalance(m: types.Message):
     uid = int(parts[1])
     amount = int(parts[2])
     change_balance(uid, amount)
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
-    await m.answer(f"✅ Баланс {uid} увеличен на {amount} ₽. Теперь: {get_balance(uid)} ₽")
+    # Убран текст 'монет'
+    await m.answer(f"✅ Баланс {uid} увеличен на {format_rubles(amount)} ₽. Теперь: {format_rubles(get_balance(uid))} ₽")
 
 
 @dp.message(Command("removebalance"))
@@ -843,8 +708,8 @@ async def cmd_removebalance(m: types.Message):
     uid = int(parts[1])
     amount = int(parts[2])
     change_balance(uid, -amount)
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
-    await m.answer(f"✅ Баланс {uid} уменьшен на {amount} ₽. Теперь: {get_balance(uid)} ₽")
+    # Убран текст 'монет'
+    await m.answer(f"✅ Баланс {uid} уменьшен на {format_rubles(amount)} ₽. Теперь: {format_rubles(get_balance(uid))} ₽")
 
 
 @dp.message(Command("setbalance"))
@@ -859,8 +724,8 @@ async def cmd_setbalance(m: types.Message):
     uid = int(parts[1])
     amount = int(parts[2])
     set_balance(uid, amount)
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
-    await m.answer(f"✅ Баланс {uid} установлен на {amount} ₽")
+    # Убран текст 'монет'
+    await m.answer(f"✅ Баланс {uid} установлен на {format_rubles(amount)} ₽")
 
 
 @dp.message(Command("adminprofit"))
@@ -871,7 +736,7 @@ async def cmd_adminprofit(m: types.Message):
     bal = get_balance(MAIN_ADMIN_ID)
     rate = await get_ton_rub_rate()
     ton_equiv = bal / rate if rate > 0 else 0
-    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+    # Убран текст 'монет'
     await m.answer(
         f"💸 Баланс админа (накопленная комиссия и игры): {format_rubles(bal)} ₽.\n"
         f"≈ {ton_equiv:.4f} TON по текущему курсу ({rate:.2f} ₽ за 1 TON).\n"
@@ -916,11 +781,7 @@ async def cb_deposit_menu(callback: CallbackQuery):
 
 
 async def ton_deposit_worker():
-    """Периодически опрашивает tonapi по адресу кошелька и ищет новые входящие переводы.
-
-    Для зачисления бот ищет в комментарии текст вида ID<user_id>, например ID123456789.
-    Это значение мы просим пользователя указывать при пополнении.
-    """
+    """Периодически опрашивает tonapi по адресу кошелька и ищет новые входящие переводы."""
     if not TON_WALLET_ADDRESS:
         print("TON_WALLET_ADDRESS не задан, ton_deposit_worker не запускается.")
         return
@@ -988,7 +849,7 @@ async def ton_deposit_worker():
                 await add_ton_deposit(tx_hash, user_id, ton_amount, coins, comment)
 
                 try:
-                    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+                    # Убран текст 'монет'
                     await bot.send_message(
                         user_id,
                         f"✅ Пополнение через TON успешно!\n\n"
@@ -1001,7 +862,7 @@ async def ton_deposit_worker():
                     pass
 
                 try:
-                    # 🔥 ИЗМЕНЕНИЕ: Убран текст 'монет'
+                    # Убран текст 'монет'
                     await bot.send_message(
                         MAIN_ADMIN_ID,
                         f"💎 Новое пополнение через TON\n"
@@ -1039,7 +900,7 @@ async def cb_withdraw_menu(callback: CallbackQuery):
         f"💸 Вывод средств в TON\n"
         f"Ваш баланс: {format_rubles(bal)} ₽ (≈ {ton_equiv:.4f} TON)\n"
         f"1 TON ≈ {rate:.2f} ₽.\n\n"
-        f"Введите сумму ₽ для вывода (целое число):" # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        f"Введите сумму ₽ для вывода (целое число):"
     )
     await callback.answer()
 
@@ -1053,7 +914,7 @@ async def cb_transfer_menu(callback: CallbackQuery):
     uid = callback.from_user.id
     pending_transfer_step[uid] = "target"
     temp_transfer[uid] = {}
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+    # 'монет' -> '₽'
     await callback.message.answer(
         "🔄 Перевод ₽\n"
         "Введите ID или @username получателя.\n"
@@ -1078,7 +939,7 @@ def resolve_user_by_username(username_str: str) -> int | None:
 async def cb_create_game(callback: CallbackQuery):
     uid = callback.from_user.id
     pending_bet_input[uid] = True
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+    # 'монет' -> '₽'
     await callback.message.answer(
         f"Введите ставку (числом, в ₽). Минимум {DICE_MIN_BET} ₽:"
     )
@@ -1091,69 +952,20 @@ async def cb_create_game(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "raffle_make_bet")
 async def cb_raffle_make_bet(callback: CallbackQuery):
-    # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=f"💰 {format_rubles(RAFFLE_QUICK_BETS[0])} ₽",
-                callback_data=f"raffle_quick:{RAFFLE_QUICK_BETS[0]}"
-            ),
-            InlineKeyboardButton(
-                text=f"💰 {format_rubles(RAFFLE_QUICK_BETS[1])} ₽",
-                callback_data=f"raffle_quick:{RAFFLE_QUICK_BETS[1]}"
-            ),
-            InlineKeyboardButton(
-                text=f"💰 {format_rubles(RAFFLE_QUICK_BETS[2])} ₽",
-                callback_data=f"raffle_quick:{RAFFLE_QUICK_BETS[2]}"
-            ),
-        ],
-        [InlineKeyboardButton(text="🔢 Ввести сумму", callback_data="raffle_enter_amount")],
-        [InlineKeyboardButton(text="⬅ Назад", callback_data="raffle_back")],
-    ]
-    kb = InlineKeyboardMarkup(inline_keyboard=rows)
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
-    await callback.message.answer(
-        f"Выберите сумму (минимум {RAFFLE_MIN_BET} ₽):",
-        reply_markup=kb
-    )
-    await callback.answer()
+    # ... (недоступно из-за заглушки в меню) ...
+    pass
 
 
 @dp.callback_query(F.data.startswith("raffle_quick:"))
 async def cb_raffle_quick(callback: CallbackQuery):
-    # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-    uid = callback.from_user.id
-    amount = int(callback.data.split(":", 1)[1])
-    try:
-        total, user_bet, chance = await place_raffle_bet(uid, amount)
-    except ValueError as e:
-        await callback.message.answer(str(e).replace("монет", "₽"))
-        await callback.answer()
-        return
-    except RuntimeError as e:
-        await callback.message.answer(str(e).replace("монет", "₽").replace("на балансе", "на балансе"))
-        await callback.answer()
-        return
-
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
-    await callback.message.answer(
-        f"✅ Ставка в розыгрыше принята!\n"
-        f"Ваша общая ставка: {format_rubles(user_bet)} ₽\n"
-        f"Общий банк: {format_rubles(total)} ₽\n"
-        f"Ваш шанс: {chance:.1f}%"
-    )
-    await callback.answer()
+    # ... (недоступно из-за заглушки в меню) ...
+    pass
 
 
 @dp.callback_query(F.data == "raffle_enter_amount")
 async def cb_raffle_enter_amount(callback: CallbackQuery):
-    uid = callback.from_user.id
-    pending_raffle_bet_input[uid] = True
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
-    await callback.message.answer(
-        f"Введите сумму ставки для розыгрыша (целое число, минимум {RAFFLE_MIN_BET} ₽):"
-    )
-    await callback.answer()
+    # ... (недоступно из-за заглушки в меню) ...
+    pass
 
 
 @dp.callback_query(F.data == "raffle_back")
@@ -1181,7 +993,7 @@ async def process_text(m: types.Message):
         if not text.isdigit():
             return await m.answer("Введите корректную ставку (число):")
         bet = int(text)
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         if bet < DICE_MIN_BET:
             return await m.answer(f"Минимальная ставка {DICE_MIN_BET} ₽.")
         if bet > get_balance(uid):
@@ -1222,17 +1034,17 @@ async def process_text(m: types.Message):
         if amount <= 0:
             return await m.answer("Сумма должна быть > 0.")
         if amount > bal:
-            return await m.answer(f"Недостаточно ₽. Ваш баланс: {bal} ₽.") # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+            return await m.answer(f"Недостаточно ₽. Ваш баланс: {format_rubles(bal)} ₽.") # 'монет' -> '₽'
         temp_withdraw[uid]["amount"] = amount
         pending_withdraw_step[uid] = "details"
 
         rate = await get_ton_rub_rate()
         ton_amount = amount / rate if rate > 0 else 0
         approx = f"{ton_amount:.4f} TON"
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         return await m.answer(
             f"💸 Вывод в TON\n"
-            f"Сумма: {amount} ₽ (≈ {approx})\n\n"
+            f"Сумма: {format_rubles(amount)} ₽ (≈ {approx})\n\n"
             f"Напишите комментарий к выводу (например, удобное время, TON-кошелёк, доп. информация):"
         )
 
@@ -1253,13 +1065,13 @@ async def process_text(m: types.Message):
         ton_amount = amount / rate if rate > 0 else 0
         ton_text = f"{ton_amount:.4f} TON"
 
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         msg_admin = (
             f"💸 НОВАЯ ЗАЯВКА НА ВЫВОД (TON)\n\n"
             f"👤 Пользователь: {mention}\n"
             f"🆔 user_id: {uid}\n"
             f"🔗 Профиль: {link}\n\n"
-            f"💰 Сумма: {amount} ₽\n"
+            f"💰 Сумма: {format_rubles(amount)} ₽\n"
             f"💎 Эквивалент: {ton_text}\n"
             f"📄 Комментарий: {details}\n\n"
             f"После фактической отправки TON уменьшите баланс через /removebalance или /setbalance."
@@ -1299,7 +1111,7 @@ async def process_text(m: types.Message):
 
         temp_transfer[uid]["target_id"] = target_id
         pending_transfer_step[uid] = "amount_transfer"
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         return await m.answer(
             "Введите сумму ₽ для перевода (минимум 1):"
         )
@@ -1312,9 +1124,9 @@ async def process_text(m: types.Message):
         if amount <= 0:
             return await m.answer("Сумма должна быть > 0.")
         bal = get_balance(uid)
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         if amount > bal:
-            return await m.answer(f"Недостаточно ₽. Ваш баланс: {bal} ₽.")
+            return await m.answer(f"Недостаточно ₽. Ваш баланс: {format_rubles(bal)} ₽.")
 
         target_id = temp_transfer[uid].get("target_id")
         if not target_id:
@@ -1327,18 +1139,18 @@ async def process_text(m: types.Message):
 
         await add_transfer(uid, target_id, amount)
 
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        # 'монет' -> '₽'
         await m.answer(
             f"✅ Перевод выполнен.\n"
             f"Вы отправили {format_rubles(amount)} ₽ пользователю ID {target_id}.\n"
-            f"Ваш новый баланс: {get_balance(uid)} ₽."
+            f"Ваш новый баланс: {format_rubles(get_balance(uid))} ₽."
         )
         try:
-            # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+            # 'монет' -> '₽'
             await bot.send_message(
                 target_id,
                 f"🔄 Вам перевели {format_rubles(amount)} ₽ от пользователя ID {uid}.\n"
-                f"Ваш новый баланс: {get_balance(target_id)} ₽."
+                f"Ваш новый баланс: {format_rubles(get_balance(target_id))} ₽."
             )
         except Exception:
             pass
@@ -1349,26 +1161,9 @@ async def process_text(m: types.Message):
 
     # 6) ввод суммы ставки для розыгрыша
     if pending_raffle_bet_input.get(uid):
-        # ... (логика остаётся, но будет недоступна из-за заглушки в меню)
-        if not text.isdigit():
-            return await m.answer("Введите сумму числом:")
-        amount = int(text)
-        try:
-            total, user_bet, chance = await place_raffle_bet(uid, amount)
-        except ValueError as e:
-            return await m.answer(str(e).replace("монет", "₽"))
-        except RuntimeError as e:
-            return await m.answer(str(e).replace("монет", "₽").replace("на балансе", "на балансе"))
+        # ... (логика остаётся, но будет недоступна из-за заглушки в меню) ...
+        return await m.answer("Розыгрыши пока неактивны.")
 
-        pending_raffle_bet_input.pop(uid, None)
-
-        # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
-        return await m.answer(
-            f"✅ Ставка в розыгрыше принята!\n"
-            f"Ваша общая ставка: {format_rubles(user_bet)} ₽\n"
-            f"Общий банк: {format_rubles(total)} ₽\n"
-            f"Ваш шанс: {chance:.1f}%"
-        )
 
     await m.answer("Используйте меню или /start.")
 
@@ -1396,7 +1191,7 @@ async def cb_game_open(callback: CallbackQuery):
 
     await callback.message.answer(
         f"🎲 Игра №{gid}\n"
-        f"💰 Ставка: {format_rubles(g['bet'])} ₽\n\n" # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+        f"💰 Ставка: {format_rubles(g['bet'])} ₽\n\n" # 'монет' -> '₽'
         f"Хотите вступить?",
         reply_markup=kb
     )
@@ -1420,7 +1215,7 @@ async def cb_game_my(callback: CallbackQuery):
     if g["opponent_id"] is not None:
         return await callback.answer("Уже есть соперник.", show_alert=True)
 
-    # 🔥 НОВАЯ ЛОГИКА: Кнопка "Отменить" доступна только в первую минуту
+    # НОВАЯ ЛОГИКА: Кнопка "Отменить" доступна только в первую минуту
     time_passed = datetime.now(timezone.utc) - g["created_at"]
     cancel_button = []
     if time_passed < DICE_BET_MIN_CANCEL_AGE: # Меньше 1 минуты
@@ -1433,7 +1228,7 @@ async def cb_game_my(callback: CallbackQuery):
     
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+    # 'монет' -> '₽'
     await callback.message.answer(
         f"🎲 Ваша игра №{gid}\n"
         f"💰 Ставка: {format_rubles(g['bet'])} ₽\n\n"
@@ -1460,7 +1255,7 @@ async def cb_cancel_game(callback: CallbackQuery):
     if g["opponent_id"] is not None:
         return await callback.answer("Уже есть соперник.", show_alert=True)
 
-    # 🔥 ИЗМЕНЕНИЕ: Проверка времени (Отмена возможна только в течение 1 минуты)
+    # Проверка времени (Отмена возможна только в течение 1 минуты)
     created_at = g["created_at"]
     if (datetime.now(timezone.utc) - created_at) > DICE_BET_MIN_CANCEL_AGE:
         return await callback.answer(
@@ -1471,8 +1266,9 @@ async def cb_cancel_game(callback: CallbackQuery):
     bet = g["bet"]
     change_balance(uid, bet)
     del games[gid]
+    # При использовании PostgreSQL и SERIAL PRIMARY KEY, удаление из локального кэша достаточно
 
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+    # 'монет' -> '₽'
     await callback.message.answer(
         f"❌ Ставка №{gid} отменена. {format_rubles(bet)} ₽ возвращены на баланс."
     )
@@ -1496,7 +1292,7 @@ async def cb_join_confirm(callback: CallbackQuery):
         return await callback.answer("Кто-то уже вступил!", show_alert=True)
 
     bet = g["bet"]
-    # 🔥 ИЗМЕНЕНИЕ: 'монет' -> '₽'
+    # 'монет' -> '₽'
     if get_balance(uid) < bet:
         return await callback.answer("Недостаточно ₽.", show_alert=True)
 
@@ -1554,8 +1350,8 @@ async def cb_refresh_games(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "rating")
 async def cb_rating(callback: CallbackQuery):
-    # 🔥 ИЗМЕНЕНИЕ: Теперь рейтинг считается динамически в build_rating_text
-    text = await build_rating_text()
+    # FIX: Убеждаемся, что build_rating_text получает uid, как и требуется
+    text = await build_rating_text(callback.from_user.id) 
     await callback.message.answer(text)
     await callback.answer()
 
@@ -1579,31 +1375,29 @@ async def cb_help(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "help_dice")
 async def cb_help_dice(callback: CallbackQuery):
-    # 🔥 ИЗМЕНЕНИЕ: Новый текст
+    # Новый текст (п. 4)
     text = (
         "🎲 Помощь: Кости (1 на 1)\n\n"
-        "1. Игроки ставят в банк сумму первоначальной ставки.\n"
-        "2. Максимальное число игроков - 2.\n"
-        "3. После того как игроки найдены, запускается розыгрыш.\n"
-        "4. Игроки бросают кости, тот, кто выбросил больше - забирает весь банк. "
+        "1. Игроки ставят в банк сумму первоначальной ставки. Максимальное число игроков - 2.\n"
+        "2. После того как игроки найдены, запускается розыгрыш.\n"
+        "3. Игроки бросают кости, тот, кто выбросил больше - забирает весь банк. "
         "Результат генерируется на стороне Телеграм.\n"
-        "5. Ставку можно отменить **только в течение первой минуты** после создания."
+        "4. Ставку можно отменить **только в течение первой минуты** после создания."
     )
     await callback.message.answer(text)
     await callback.answer()
 
 @dp.callback_query(F.data == "help_banker")
 async def cb_help_banker(callback: CallbackQuery):
-    # 🔥 ИЗМЕНЕНИЕ: Новый текст
+    # Новый текст (п. 5)
     text = (
         "🎩 Помощь: Банкир (Розыгрыш)\n\n"
-        "1. Участники кладут в банк сумму равную самой первой ставке.\n"
-        f"2. Можно сделать не больше {RAFFLE_MAX_BETS_PER_ROUND} ставок за игру.\n"
-        "3. Чем больше вы положили в банк, тем выше ваш шанс на победу.\n"
-        "4. После того как набралось 2 участника, запускается таймер до окончания игры.\n"
-        "5. По истечению таймера начинается розыгрыш, система выбирает случайного победителя "
+        "1. Участники кладут в банк сумму равную самой первой ставке. Можно сделать не больше 10 ставок за игру.\n"
+        "2. Чем больше вы положили в банк, тем выше ваш шанс на победу.\n"
+        "3. После того как набралось 2 участника, запускается таймер до окончания игры.\n"
+        "4. По истечению таймера начинается розыгрыш, система выбирает случайного победителя "
         "из всех кто скинул в банк. Победитель забирает весь банк.\n"
-        "6. Ставку можно отменить через 10 минут." # Здесь сохранено оригинальное требование, но функционал отмены не реализован
+        "5. Ставку можно отменить через 10 минут."
     )
     await callback.message.answer(text)
     await callback.answer()
@@ -1645,11 +1439,11 @@ async def cb_ignore(callback: CallbackQuery):
 # ========================
 
 async def main():
-    print("Бот запущен (TON + Кости + Банкир + переводы, SQLite).")
+    print("Бот запущен (TON + Кости + Банкир + переводы, PostgreSQL).")
     # инициализация БД и загрузка данных
     await init_db(user_balances, user_usernames, processed_ton_tx)
-    # 🔥 УДАЛЕНО: cleanup_worker()
-    asyncio.create_task(ton_deposit_worker())
+    # Запуск воркера для проверки транзакций
+    asyncio.create_task(ton_deposit_worker()) 
     await dp.start_polling(bot)
 
 
