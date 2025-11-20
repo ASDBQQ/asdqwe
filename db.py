@@ -1,6 +1,6 @@
 import os
 import asyncpg
-from datetime import datetime, timedelta, timezone # <-- FIX: timedelta теперь явно импортирован!
+from datetime import datetime, timedelta, timezone # <-- ИСПРАВЛЕНИЕ: timedelta теперь импортирован!
 from typing import Dict, Any, List, Optional
 
 # Глобальный пул подключений к PostgreSQL
@@ -10,6 +10,7 @@ async def init_db(user_balances: Dict[int, int], user_usernames: Dict[int, str],
     """Инициализация пула подключений и создание таблиц."""
     global pool
     
+    # Чтение переменной, которую предоставляет Railway
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL:
         # Это должно быть установлено на Railway. Если нет - бот не запустится.
@@ -274,7 +275,7 @@ async def get_user_bets_in_raffle(raffle_id: int, user_id: int) -> int:
 async def get_users_profit_and_games_30_days() -> tuple[List[Dict[str, Any]], List[int]]:
     if not pool: return [], []
     now = datetime.now(timezone.utc)
-    # timedelta доступна благодаря импорту в начале файла
+    # timedelta теперь доступна
     delta_30_days = now - timedelta(days=30) 
     
     async with pool.acquire() as db:
