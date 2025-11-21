@@ -806,7 +806,8 @@ async def cb_banker_join(callback: CallbackQuery):
            f"**Банкир:** @{creator_user}\n" \
            f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
            f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n" \
-           f"**Присоединились:** (', '.join([f"@{j['username']}" for j in joiners_list]))
+          joined = ", ".join([f"@{j['username']}" for j in joiners_list])
+return f"**Присоединились:** {joined}"
 
            "Ожидаем присоединившихся игроков или начала броска."
     
@@ -1745,6 +1746,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен.")
+
 
 
 
