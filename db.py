@@ -777,41 +777,45 @@ async def cb_banker_join(callback: CallbackQuery):
         return await callback.answer(f"Недостаточно средств. Ваш баланс: {format_rubles(get_balance(joiner_id))} ₽", show_alert=True)
 
     # 1. Списываем ставку у присоединившегося (обновленная change_balance сохраняет новый баланс)
-    change_balance(joiner_id, -bet_amount)
+       change_balance(joiner_id, -bet_amount)
 
     # 2. Обновляем joiners в кэше
     joiner_username = callback.from_user.username or f"ID{joiner_id}"
     joiners_list.append({
         'user_id': joiner_id,
         'username': joiner_username,
-        'bet': bet_amount, # Изменено с bet_amount, чтобы соответствовать ключу в game
+        'bet': bet_amount,
         'roll': None,
         'won': None,
     })
     
-    # 3. Обновляем БД (используем upsert_game с полным словарем)
+    # 3. Обновляем БД
     game_update = game.copy()
     game_update['joiners'] = joiners_list
     await upsert_game(game_update)
-    games[game_id]['joiners'] = joiners_list # Обновляем кэш
+    games[game_id]['joiners'] = joiners_list
 
     await callback.answer("Вы успешно присоединились! Ожидайте броска Банкира.", show_alert=True)
     
     # Обновляем сообщение
     creator_user = user_usernames.get(game['creator_id'], f"ID{game['creator_id']}")
     joiners_count = len(joiners_list)
-    
-    # ИСПРАВЛЕНИЕ: Используем одинарные кавычки для 'username'
-    text = f"🎩 **Игра 'Банкир' №{game_id}**\n\n" \
-           f"**Банкир:** @{creator_user}\n" \
-           f"**Ставка:** {format_rubles(bet_amount)} ₽\n" \
-           f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n" \
-          (', '.join([f"@{j['username']}" for j in joiners_list]))
 
+    # Собираем список участников
+    joined_usernames = ", ".join([f"@{j['username']}" for j in joiners_list])
 
-           "Ожидаем присоединившихся игроков или начала броска."
-    
+    # Финальный текст
+    text = (
+        f"🎩 **Игра 'Банкир' №{game_id}**\n\n"
+        f"**Банкир:** @{creator_user}\n"
+        f"**Ставка:** {format_rubles(bet_amount)} ₽\n"
+        f"**Слоты:** {joiners_count}/{BANKER_MAX_JOINERS}\n"
+        f"**Присоединились:** {joined_usernames}\n\n"
+        "Ожидаем присоединившихся игроков или начала броска."
+    )
+
     await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
+
     
     await callback.message.edit_text(text, reply_markup=get_banker_game_kb(game_id, joiners_count))
 
@@ -1746,6 +1750,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот остановлен.")
+
 
 
 
